@@ -1,7 +1,9 @@
 package com.example.rfid_c72_plugin;
 
 public abstract class UHFListener {
-    abstract void onRead(String tagsJson);
+    abstract void onRfidRead(String tagsJson);
 
-    abstract void onConnect(boolean isConnected, int powerLevel);
+    abstract void onBarcodeRead(String barcodeScan);
+
+    abstract void onRfidConnect(boolean isRfidConnected, int powerLevel);
 }

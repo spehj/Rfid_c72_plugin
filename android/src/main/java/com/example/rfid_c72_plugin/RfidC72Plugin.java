@@ -21,26 +21,29 @@ import io.flutter.plugin.common.PluginRegistry.Registrar;
  * RfidC72Plugin
  */
 public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
-  private static final String CHANNEL_IsStarted = "isStarted";
-  private static final String CHANNEL_StartSingle = "startSingle";
-  private static final String CHANNEL_StartContinuous = "startContinuous";
-  private static final String CHANNEL_Stop = "stop";
-  private static final String CHANNEL_ClearData = "clearData";
-  private static final String CHANNEL_IsEmptyTags = "isEmptyTags";
-  private static final String CHANNEL_Close = "close";
-  private static final String CHANNEL_Connect = "connect";
-  private static final String CHANNEL_IsConnected = "isConnected";
-  private static final String CHANNEL_SETPOWERLEVEL = "setPowerLevel";
-  private static final String CHANNEL_SETWORKAREA = "setWorkArea";
-  private static final String CHANNEL_ConnectedStatus = "ConnectedStatus";
-  private static final String CHANNEL_TagsStatus = "TagsStatus";
-  private static final String CHANNEL_CONNECT_BARCODE = "connectBarcode";
-  private static final String CHANNEL_SCAN_BARCODE = "scanBarcode";
-  private static final String CHANNEL_STOP_SCAN_BARCODE = "stopScan";
-  private static final String CHANNEL_READ_BARCODE = "readBarcode";
-  private static final String CHANNEL_CLOSE_SCAN_BARCODE="closeScan";
-  private static PublishSubject<Boolean> connectedStatus = PublishSubject.create();
-  private static PublishSubject<String> tagsStatus = PublishSubject.create();
+  private static final String CHANNEL_isContinuousRfidReadActive = "isContinuousRfidReadActive";
+  private static final String CHANNEL_startRfidSingle = "startRfidSingle";
+  private static final String CHANNEL_startRfidContinuous = "startRfidContinuous";
+  private static final String CHANNEL_startBarcodeContinuous = "startBarcodeContinuous";
+  private static final String CHANNEL_stopRfid = "stopRfid";
+  private static final String CHANNEL_clearData = "clearData";
+  private static final String CHANNEL_isEmptyTags = "isEmptyTags";
+  private static final String CHANNEL_closeRfidReader = "closeRfidReader";
+  private static final String CHANNEL_connectRfid = "connectRfid";
+  private static final String CHANNEL_isRfidConnected = "isRfidConnected";
+  private static final String CHANNEL_setPowerLevel = "setPowerLevel";
+  private static final String CHANNEL_setWorkArea = "setWorkArea";
+  private static final String CHANNEL_connectedStatusSubject = "connectedStatusSubject";
+  private static final String CHANNEL_tagsStatusSubject = "tagsStatusSubject";
+  private static final String CHANNEL_barcodeScanSubject = "barcodeScanSubject";
+  private static final String CHANNEL_connectBarcode = "connectBarcode";
+  private static final String CHANNEL_scanBarcode = "scanBarcode";
+  private static final String CHANNEL_stopScanBarcode = "stopScanBarcode";
+  private static final String CHANNEL_readBarcode = "readBarcode";
+  private static final String CHANNEL_closeScanBarcode="closeScanBarcode";
+  private static PublishSubject<Boolean> connectedStatusSubject = PublishSubject.create();
+  private static PublishSubject<String> tagsStatusSubject = PublishSubject.create();
+  private static PublishSubject<String> barcodeScanSubject = PublishSubject.create();
 
   // This static function is optional and equivalent to onAttachedToEngine. It supports the old
   // pre-Flutter-1.12 Android projects. You are encouraged to continue supporting
@@ -54,20 +57,29 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
   public static void registerWith(Registrar registrar) {
     final MethodChannel channel = new MethodChannel(registrar.messenger(), "rfid_c72_plugin");
     initConnectedEvent(registrar.messenger());
-    initReadEvent(registrar.messenger());
+    initRfidReadEvent(registrar.messenger());
+    initBarcodeReadEvent(registrar.messenger());
     channel.setMethodCallHandler(new RfidC72Plugin());
 
     UHFHelper.getInstance().init(registrar.context());
+
+    // This feeds the RFID reads into the stream
     UHFHelper.getInstance().setUhfListener(new UHFListener() {
       @Override
-      public void onRead(String tagsJson) {
+      public void onRfidRead(String tagsJson) {
         if (tagsJson != null)
-          tagsStatus.onNext(tagsJson);
+          tagsStatusSubject.onNext(tagsJson);
+      }
+      
+      @Override
+      public void onBarcodeRead(String barcodeScan) {
+        if (barcodeScan != null)
+          barcodeScanSubjectEventChannel.onNext(barcodeScan);
       }
 
       @Override
-      public void onConnect(boolean isConnected, int powerLevel) {
-        connectedStatus.onNext(isConnected);
+      public void onRfidConnect(boolean isRfidConnected, int powerLevel) {
+        connectedStatusSubject.onNext(isRfidConnected);
       }
     });
   }
@@ -76,53 +88,60 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
   public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
     final MethodChannel channel = new MethodChannel(flutterPluginBinding.getBinaryMessenger(), "rfid_c72_plugin");
     initConnectedEvent(flutterPluginBinding.getBinaryMessenger());
-    initReadEvent(flutterPluginBinding.getBinaryMessenger());
+    initRfidReadEvent(flutterPluginBinding.getBinaryMessenger());
+    initBarcodeReadEvent(flutterPluginBinding.getBinaryMessenger());
     Context applicationContext = flutterPluginBinding.getApplicationContext();
     channel.setMethodCallHandler(new RfidC72Plugin());
     UHFHelper.getInstance().init(applicationContext);
     UHFHelper.getInstance().setUhfListener(new UHFListener() {
       @Override
-      public void onRead(String tagsJson) {
+      public void onRfidRead(String tagsJson) {
         if (tagsJson != null)
-          tagsStatus.onNext(tagsJson);
+          tagsStatusSubject.onNext(tagsJson);
       }
 
       @Override
-      public void onConnect(boolean isConnected, int powerLevel) {
-        connectedStatus.onNext(isConnected);
+      public void onBarcodeRead(String barcodeScan) {
+        if (barcodeScan != null)
+          barcodeScanSubjectEventChannel.onNext(barcodeScan);
+      }
+
+      @Override
+      public void onRfidConnect(boolean isRfidConnected, int powerLevel) {
+        connectedStatusSubject.onNext(isRfidConnected);
       }
     });
   }
 
 
   private static void initConnectedEvent(BinaryMessenger messenger) {
-    final EventChannel scannerEventChannel = new EventChannel(messenger, CHANNEL_ConnectedStatus);
+    final EventChannel scannerEventChannel = new EventChannel(messenger, CHANNEL_connectedStatusSubject);
     scannerEventChannel.setStreamHandler(new EventChannel.StreamHandler() {
       @Override
       public void onListen(Object o, final EventChannel.EventSink eventSink) {
-        connectedStatus
-                .subscribeOn(Schedulers.newThread())
-                .observeOn(AndroidSchedulers.mainThread()).subscribe(new Observer<Boolean>() {
-                  @Override
-                  public void onSubscribe(Disposable d) {
+        connectedStatusSubject
+          .subscribeOn(Schedulers.newThread())
+          .observeOn(AndroidSchedulers.mainThread()).subscribe(new Observer<Boolean>() {
+            @Override
+            public void onSubscribe(Disposable d) {
 
-                  }
+            }
 
-                  @Override
-                  public void onNext(Boolean isConnected) {
-                    eventSink.success(isConnected);
-                  }
+            @Override
+            public void onNext(Boolean isRfidConnected) {
+              eventSink.success(isRfidConnected);
+            }
 
-                  @Override
-                  public void onError(Throwable e) {
+            @Override
+            public void onError(Throwable e) {
 
-                  }
+            }
 
-                  @Override
-                  public void onComplete() {
+            @Override
+            public void onComplete() {
 
-                  }
-                });
+            }
+          });
       }
 
       @Override
@@ -132,34 +151,71 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
     });
   }
 
-  private static void initReadEvent(BinaryMessenger messenger) {
-    final EventChannel scannerEventChannel = new EventChannel(messenger, CHANNEL_TagsStatus);
+  private static void initRfidReadEvent(BinaryMessenger messenger) {
+    final EventChannel scannerEventChannel = new EventChannel(messenger, CHANNEL_tagsStatusSubject);
     scannerEventChannel.setStreamHandler(new EventChannel.StreamHandler() {
       @Override
       public void onListen(Object o, final EventChannel.EventSink eventSink) {
-        tagsStatus
-                .subscribeOn(Schedulers.newThread())
-                .observeOn(AndroidSchedulers.mainThread()).subscribe(new Observer<String>() {
-                  @Override
-                  public void onSubscribe(Disposable d) {
+        tagsStatusSubject
+          .subscribeOn(Schedulers.newThread())
+          .observeOn(AndroidSchedulers.mainThread()).subscribe(new Observer<String>() {
+            @Override
+            public void onSubscribe(Disposable d) {
 
-                  }
+            }
 
-                  @Override
-                  public void onNext(String tag) {
-                    eventSink.success(tag);
-                  }
+            @Override
+            public void onNext(String tag) {
+              eventSink.success(tag);
+            }
 
-                  @Override
-                  public void onError(Throwable e) {
+            @Override
+            public void onError(Throwable e) {
 
-                  }
+            }
 
-                  @Override
-                  public void onComplete() {
+            @Override
+            public void onComplete() {
 
-                  }
-                });
+            }
+          });
+      }
+
+      @Override
+      public void onCancel(Object o) {
+
+      }
+    });
+  }
+
+  private static void initBarcodeReadEvent(BinaryMessenger messenger) {
+    final EventChannel scannerEventChannel = new EventChannel(messenger, CHANNEL_barcodeScanSubject);
+    scannerEventChannel.setStreamHandler(new EventChannel.StreamHandler() {
+      @Override
+      public void onListen(Object o, final EventChannel.EventSink eventSink) {
+        barcodeScanSubject
+          .subscribeOn(Schedulers.newThread())
+          .observeOn(AndroidSchedulers.mainThread()).subscribe(new Observer<String>() {
+            @Override
+            public void onSubscribe(Disposable d) {
+
+            }
+
+            @Override
+            public void onNext(String value) {
+              eventSink.success(value);
+            }
+
+            @Override
+            public void onError(Throwable e) {
+
+            }
+
+            @Override
+            public void onComplete() {
+
+            }
+          });
       }
 
       @Override
@@ -180,56 +236,59 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
       case "getPlatformVersion":
         result.success("Android " + android.os.Build.VERSION.RELEASE);
         break;
-      case CHANNEL_IsStarted:
-        result.success(UHFHelper.getInstance().isStarted());
+      case CHANNEL_isContinuousRfidReadActive:
+        result.success(UHFHelper.getInstance().isContinuousRfidReadActive());
         break;
-      case CHANNEL_StartSingle:
-        result.success(UHFHelper.getInstance().start(true));
+      case CHANNEL_startRfidSingle:
+        result.success(UHFHelper.getInstance().startRfidSingle());
         break;
-      case CHANNEL_StartContinuous:
-        result.success(UHFHelper.getInstance().start(false));
+      case CHANNEL_startRfidContinuous:
+        result.success(UHFHelper.getInstance().startRfidContinuous());
         break;
-      case CHANNEL_Stop:
-        result.success(UHFHelper.getInstance().stop());
+      case CHANNEL_startBarcodeContinuous:
+        result.success(UHFHelper.getInstance().startBarcodeContinuous());
         break;
-      case CHANNEL_ClearData:
+      case CHANNEL_stopRfid:
+        result.success(UHFHelper.getInstance().stopRfid());
+        break;
+      case CHANNEL_clearData:
         UHFHelper.getInstance().clearData();
         result.success(true);
         break;
-      case CHANNEL_IsEmptyTags:
+      case CHANNEL_isEmptyTags:
         result.success(UHFHelper.getInstance().isEmptyTags());
         break;
-      case CHANNEL_Close:
-        UHFHelper.getInstance().close();
+      case CHANNEL_closeRfidReader:
+        UHFHelper.getInstance().closeRfidReader();
         result.success(true);
         break;
-      case CHANNEL_Connect:
-        result.success(UHFHelper.getInstance().connect());
+      case CHANNEL_connectRfid:
+        result.success(UHFHelper.getInstance().connectRfid());
         break;
-      case CHANNEL_IsConnected:
-        result.success(UHFHelper.getInstance().isConnected());
+      case CHANNEL_isRfidConnected:
+        result.success(UHFHelper.getInstance().isRfidConnected());
         break;
-      case CHANNEL_SETPOWERLEVEL:
+      case CHANNEL_connectBarcode:
+        result.success(UHFHelper.getInstance().connectBarcode());
+        break;
+      case CHANNEL_scanBarcode:
+        result.success(UHFHelper.getInstance().scanBarcode());
+        break;
+      case CHANNEL_stopScanBarcode:
+        result.success(UHFHelper.getInstance().stopScanBarcode());
+        break;
+      case CHANNEL_closeScanBarcode:
+        result.success(UHFHelper.getInstance().closeScanBarcode());
+        break;
+      case CHANNEL_setPowerLevel:
         String powerLevel = call.argument("value");
         result.success(UHFHelper.getInstance().setPowerLevel(powerLevel));
         break;
-      case CHANNEL_SETWORKAREA:
+      case CHANNEL_setWorkArea:
         String workArea = call.argument("value");
         result.success(UHFHelper.getInstance().setWorkArea(workArea));
         break;
-      case CHANNEL_CONNECT_BARCODE:
-        result.success(UHFHelper.getInstance().connectBarcode());
-        break;
-      case CHANNEL_SCAN_BARCODE:
-        result.success(UHFHelper.getInstance().scanBarcode());
-        break;
-      case CHANNEL_STOP_SCAN_BARCODE:
-        result.success(UHFHelper.getInstance().stopScan());
-        break;
-      case CHANNEL_CLOSE_SCAN_BARCODE:
-        result.success(UHFHelper.getInstance().closeScan());
-        break;
-      case CHANNEL_READ_BARCODE:
+      case CHANNEL_readBarcode:
         result.success(UHFHelper.getInstance().readBarcode());
         break;
       default:

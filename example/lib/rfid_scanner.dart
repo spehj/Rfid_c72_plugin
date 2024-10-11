@@ -14,9 +14,9 @@ class RfidScanner extends StatefulWidget {
 class _RfidScannerState extends State<RfidScanner> {
   String _platformVersion = 'Unknown';
   final bool _isHaveSavedData = false;
-  final bool _isStarted = false;
+  final bool _isContinuousRfidReadActive = false;
   final bool _isEmptyTags = false;
-  bool _isConnected = false;
+  bool _isRfidConnected = false;
   bool _isLoading = true;
   int _totalEPC = 0, _invalidEPC = 0, _scannedEPC = 0;
 
@@ -34,8 +34,8 @@ class _RfidScannerState extends State<RfidScanner> {
 
 //Hopefully we free memory in the device.
   closeAll() {
-    RfidC72Plugin.stopScan;
-    RfidC72Plugin.close;
+    RfidC72Plugin.stopScanBarcode;
+    RfidC72Plugin.closeRfid;
   }
 
 // Platform messages are asynchronous, so we initialize in an async method.
@@ -47,11 +47,11 @@ class _RfidScannerState extends State<RfidScanner> {
     } on PlatformException {
       platformVersion = 'Failed to get platform version.';
     }
-    RfidC72Plugin.connectedStatusStream
+    RfidC72Plugin.connectedStatusSubjectStream
         .receiveBroadcastStream()
-        .listen(updateIsConnected);
-    RfidC72Plugin.tagsStatusStream.receiveBroadcastStream().listen(updateTags);
-    await RfidC72Plugin.connect;
+        .listen(updateisRfidConnected);
+    RfidC72Plugin.tagsStatusSubjectEventChannel.receiveBroadcastStream().listen(updateTags);
+    await RfidC72Plugin.connectRfid;
 // await UhfC72Plugin.setWorkArea('2');
 // await UhfC72Plugin.setPowerLevel('30');
 // If the widget was removed from the tree while the asynchronous platform
@@ -77,9 +77,9 @@ class _RfidScannerState extends State<RfidScanner> {
     });
   }
 
-  void updateIsConnected(dynamic isConnected) {
+  void updateisRfidConnected(dynamic isRfidConnected) {
 //setState(() {
-    _isConnected = isConnected;
+    _isRfidConnected = isRfidConnected;
 //});
   }
 
@@ -122,7 +122,7 @@ class _RfidScannerState extends State<RfidScanner> {
                       style: TextStyle(color: Colors.white),
                     ),
                     onPressed: () async {
-                      await RfidC72Plugin.startSingle;
+                      await RfidC72Plugin.startRfidSingle;
                     },
                   ),
                   ElevatedButton(
@@ -143,9 +143,9 @@ class _RfidScannerState extends State<RfidScanner> {
                               style: TextStyle(color: Colors.white),
                             ),
                       onPressed: () async {
-                        bool? isStarted = _isContinuousCall == true
+                        bool? isContinuousRfidReadActive = _isContinuousCall == true
                             ? await RfidC72Plugin.stop
-                            : await RfidC72Plugin.startContinuous;
+                            : await RfidC72Plugin.startRfidContinuous;
                         setState(() {
                           _isContinuousCall = !_isContinuousCall;
                         });

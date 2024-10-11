@@ -10,28 +10,35 @@ class RfidC72Plugin {
     return version;
   }
 
-  static const EventChannel connectedStatusStream =
-  EventChannel('ConnectedStatus');
-  static const EventChannel tagsStatusStream = EventChannel('TagsStatus');
+  static const EventChannel connectedStatusSubjectStream =
+  EventChannel('connectedStatusSubject');
+  // Used in flutter:
+  // RfidC72Plugin.tagsStatusSubjectEventChannel.receiveBroadcastStream().listen(updateTags);
+  static const EventChannel tagsStatusSubjectEventChannel = EventChannel('tagsStatusSubject');
+  static const EventChannel barcodeScanSubjectEventChannel = EventChannel('barcodeScanSubject');
 
-  static Future<bool?> get isStarted async {
-    return _channel.invokeMethod('isStarted');
+  static Future<bool?> get isContinuousRfidReadActive async {
+    return _channel.invokeMethod('isContinuousRfidReadActive');
   }
 
-  static Future<bool?> get startSingle async {
-    return _channel.invokeMethod('startSingle');
+  static Future<bool?> get startRfidSingle async {
+    return _channel.invokeMethod('startRfidSingle');
   }
 
-  static Future<bool?> get startContinuous async {
-    return _channel.invokeMethod('startContinuous');
+  static Future<bool?> get startRfidContinuous async {
+    return _channel.invokeMethod('startRfidContinuous');
   }
 
-  static Future<bool?> get stop async {
-    return _channel.invokeMethod('stop');
+  static Future<bool?> get startBarcodeContinuous async {
+    return _channel.invokeMethod('startBarcodeContinuous');
   }
 
-  static Future<bool?> get close async {
-    return _channel.invokeMethod('close');
+  static Future<bool?> get stopRfid async {
+    return _channel.invokeMethod('stopRfid');
+  }
+
+  static Future<bool?> get closeRfid async {
+    return _channel.invokeMethod('closeRfid');
   }
 
   static Future<bool?> get clearData async {
@@ -42,12 +49,12 @@ class RfidC72Plugin {
     return _channel.invokeMethod('isEmptyTags');
   }
 
-  static Future<bool?> get connect async {
-    return _channel.invokeMethod('connect');
+  static Future<bool?> get connectRfid async {
+    return _channel.invokeMethod('connectRfid');
   }
 
-  static Future<bool?> get isConnected async {
-    return _channel.invokeMethod('isConnected');
+  static Future<bool?> get isRfidConnected async {
+    return _channel.invokeMethod('isRfidConnected');
   }
 
   static Future<bool?> get connectBarcode async {
@@ -58,8 +65,8 @@ class RfidC72Plugin {
     return _channel.invokeMethod('scanBarcode');
   }
 
-  static Future<bool?> get stopScan async {
-    return _channel.invokeMethod('stopScan');
+  static Future<bool?> get stopScanBarcode async {
+    return _channel.invokeMethod('stopScanBarcode');
   }
 
 
