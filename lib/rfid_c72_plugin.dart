@@ -10,7 +10,7 @@ class RfidC72Plugin {
     return version;
   }
 
-  static const EventChannel connectedStatusSubjectStream =
+  static const EventChannel connectedStatusSubjectEventChannel =
   EventChannel('connectedStatusSubject');
   // Used in flutter:
   // RfidC72Plugin.tagsStatusSubjectEventChannel.receiveBroadcastStream().listen(updateTags);
