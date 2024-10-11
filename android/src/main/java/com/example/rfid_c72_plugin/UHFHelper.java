@@ -156,37 +156,36 @@ public class UHFHelper {
         }
     
         if (performSingleRead) {
-            // Single Read
-            return handleSingleRfidRead();
+            // Single read
+            UHFTAGInfo tagInfo = mReader.inventorySingleTag();
+            if (tagInfo != null) {
+                String epc = tagInfo.getEPC();
+                addEPCToList(epc, tagInfo.getRssi());
+                return true;
+            }
         } else {
-            // Auto read multi
-            return startContinuousRfidRead();
-        }
-    }
-    
-    private boolean handleSingleRfidRead() {
-        UHFTAGInfo tagInfo = mReader.inventorySingleTag();
-        if (tagInfo != null) {
-            String epc = tagInfo.getEPC();
-            addEPCToList(epc, tagInfo.getRssi());
-            return true;
+            // Continuous read
+            if (mReader.startInventoryTag()) {
+                continuousRfidReadActive = true;
+                new RfidContinuousReadThread().start();
+                return true;
+            }
         }
         return false;
     }
     
-    private boolean startContinuousRfidRead() {
+    public boolean startRfidSingle() {
+        return startRfidRead(true);  // Calls the private method to handle single read
+    }
+    
+    public boolean startRfidContinuous() {
         // Auto read multi  .startInventoryTag((byte) 0, (byte) 0))
         // mContext.mReader.setEPCTIDMode(true);
-        if (mReader.startInventoryTag()) {
-            continuousRfidReadActive = true;
-            new RfidContinuousReadThread().start();
-            return true;
-        }
-        return false;
+        return startRfidRead(false);  // Calls the private method to handle continuous read
     }
 
     public boolean startBarcode() {
-        
+        return true;
     }
 
     public void clearData() {
