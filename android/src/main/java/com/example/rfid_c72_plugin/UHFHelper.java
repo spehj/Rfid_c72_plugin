@@ -79,9 +79,9 @@ public class UHFHelper {
 
 
         barcodeHandler = new Handler() {
-            @Override
-            public void handleMessage(String msg) {
-                recordBarcodeScan(msg);
+            public void handleMessage(Message msg) {
+                String result = msg.obj + "";
+                recordBarcodeScan(result);
             }
         };
     }
@@ -145,7 +145,7 @@ public class UHFHelper {
     }
 
     public boolean stopScanBarcode() {
-        barcodeDecoder.stopScanBarcode();
+        barcodeDecoder.stopScan();
         Log.i(TAG, "Calling stop scan");
         return true;
     }
@@ -331,7 +331,9 @@ public class UHFHelper {
                     Log.e(TAG,"BarcodeDecoder==========================:"+barcodeEntity.getResultCode());
                     if(barcodeEntity.getResultCode() == BarcodeDecoder.DECODE_SUCCESS){
                         // scannedBarcode = barcodeEntity.getBarcodeData();
-                        barcodeHandler.sendMessage(barcodeEntity.getBarcodeData());
+                        Message msg = rfidHandler.obtainMessage();
+                        msg.obj = barcodeEntity.getBarcodeData();
+                        barcodeHandler.sendMessage(msg);
                         Log.e(TAG,"Data==========================:"+barcodeEntity.getBarcodeData());
                     } else {
                         // scannedBarcode = "FAIL";
