@@ -165,6 +165,7 @@ public class UHFHelper {
     }
 
     public void clearData() {
+        scannedBarcode = null;
         tagList.clear();
     }
 
