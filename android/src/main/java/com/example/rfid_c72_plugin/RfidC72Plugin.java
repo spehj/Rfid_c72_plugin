@@ -1,6 +1,7 @@
 package com.example.rfid_c72_plugin;
 
 import android.content.Context;
+import android.util.Log;
 
 import io.reactivex.Observer;
 import io.reactivex.android.schedulers.AndroidSchedulers;

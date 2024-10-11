@@ -79,7 +79,9 @@ public class UHFHelper {
 
 
         barcodeHandler = new Handler() {
+            @Override
             public void handleMessage(Message msg) {
+                Log.e(TAG, "Received barcode message");
                 String result = msg.obj + "";
                 recordBarcodeScan(result);
             }
@@ -115,25 +117,10 @@ public class UHFHelper {
 
 
     public boolean connectBarcode() {
-        if (barcodeDecoder == null) {
-            barcodeDecoder = BarcodeFactory.getInstance().getBarcodeDecoder();
-        }
-        barcodeDecoder.open(context);
+        Log.e(TAG, "startBarcodeContinuous");
 
-        //BarcodeUtility.getInstance().enablePlaySuccessSound(context, true);
+        startBarcodeContinuous();
 
-        barcodeDecoder.setDecodeCallback(new BarcodeDecoder.DecodeCallback() {
-            @Override
-            public void onDecodeComplete(BarcodeEntity barcodeEntity) {
-                Log.e(TAG,"BarcodeDecoder==========================:"+barcodeEntity.getResultCode());
-                if(barcodeEntity.getResultCode() == BarcodeDecoder.DECODE_SUCCESS){
-                    scannedBarcode = barcodeEntity.getBarcodeData();
-                    Log.e(TAG,"Data==========================:"+barcodeEntity.getBarcodeData());
-                }else{
-                    scannedBarcode = "FAIL";
-                }
-            }
-        });
         return true;
     }
 
@@ -185,6 +172,8 @@ public class UHFHelper {
     }
 
     public boolean startBarcodeContinuous() {
+        continuousBarcodeReadActive = true;
+        new BarcodeContinuousReadThread().start();
         return true;
     }
 
@@ -284,6 +273,7 @@ public class UHFHelper {
 
     public boolean closeScanBarcode() {
         barcodeDecoder.close();
+        continuousBarcodeReadActive = false;
         return true;
     }
 
@@ -321,8 +311,10 @@ public class UHFHelper {
                 barcodeDecoder = BarcodeFactory.getInstance().getBarcodeDecoder();
             }
             barcodeDecoder.open(context);
+
+            Log.e(TAG, "Initialized barcode thread");
     
-            //BarcodeUtility.getInstance().enablePlaySuccessSound(context, true);
+            BarcodeUtility.getInstance().enablePlaySuccessSound(context, true);
     
             barcodeDecoder.setDecodeCallback(new BarcodeDecoder.DecodeCallback() {
                 @Override
@@ -340,24 +332,7 @@ public class UHFHelper {
                     }
                 }
             });
-            while (continuousBarcodeReadActive) {
-
-                // res = mReader.readTagFromBuffer();
-                // if (res != null) {
-                //     strTid = res.getTid();
-                //     if (strTid.length() != 0 && !strTid.equals("0000000" +
-                //             "000000000") && !strTid.equals("000000000000000000000000")) {
-                //         strResult = "TID:" + strTid + "\n";
-                //     } else {
-                //         strResult = "";
-                //     }
-                //     Log.i("data", "c" + res.getEPC() + "|" + strResult);
-                //     Message msg = rfidHandler.obtainMessage();
-                //     msg.obj = strResult + "EPC:" + res.getEPC() + "@" + res.getRssi();
-
-                //     rfidHandler.sendMessage(msg);
-                // }
-            }
+            while (continuousBarcodeReadActive) {}
 
             barcodeDecoder.close();
         }
