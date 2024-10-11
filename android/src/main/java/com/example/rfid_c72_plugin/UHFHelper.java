@@ -184,7 +184,7 @@ public class UHFHelper {
         return startRfidRead(false);  // Calls the private method to handle continuous read
     }
 
-    public boolean startBarcode() {
+    public boolean startBarcodeContinuous() {
         return true;
     }
 
