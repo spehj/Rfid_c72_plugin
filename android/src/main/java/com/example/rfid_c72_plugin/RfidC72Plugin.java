@@ -74,7 +74,7 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
       @Override
       public void onBarcodeRead(String barcodeScan) {
         if (barcodeScan != null)
-          barcodeScanSubjectEventChannel.onNext(barcodeScan);
+          barcodeScanSubject.onNext(barcodeScan);
       }
 
       @Override
@@ -103,7 +103,7 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
       @Override
       public void onBarcodeRead(String barcodeScan) {
         if (barcodeScan != null)
-          barcodeScanSubjectEventChannel.onNext(barcodeScan);
+          barcodeScanSubject.onNext(barcodeScan);
       }
 
       @Override
