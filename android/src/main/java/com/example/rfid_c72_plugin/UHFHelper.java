@@ -283,7 +283,7 @@ public class UHFHelper {
             String strResult;
             UHFTAGInfo res = null;
             while (continuousRfidReadActive) {
-                res = mReader.readTagFromBuffer();
+                res = mReader.setInventoryCallback();
                 if (res != null) {
                     strTid = res.getTid();
                     if (strTid.length() != 0 && !strTid.equals("0000000" +
@@ -321,8 +321,7 @@ public class UHFHelper {
                 public void onDecodeComplete(BarcodeEntity barcodeEntity) {
                     Log.e(TAG,"BarcodeDecoder==========================:"+barcodeEntity.getResultCode());
                     if(barcodeEntity.getResultCode() == BarcodeDecoder.DECODE_SUCCESS){
-                        // scannedBarcode = barcodeEntity.getBarcodeData();
-                        Message msg = rfidHandler.obtainMessage();
+                        Message msg = barcodeHandler.obtainMessage();
                         msg.obj = barcodeEntity.getBarcodeData();
                         barcodeHandler.sendMessage(msg);
                         Log.e(TAG,"Data==========================:"+barcodeEntity.getBarcodeData());
