@@ -283,7 +283,7 @@ public class UHFHelper {
             String strResult;
             UHFTAGInfo res = null;
             while (continuousRfidReadActive) {
-                res = mReader.setInventoryCallback();
+                res = mReader.readTagFromBuffer();
                 if (res != null) {
                     strTid = res.getTid();
                     if (strTid.length() != 0 && !strTid.equals("0000000" +

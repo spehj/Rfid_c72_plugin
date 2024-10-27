@@ -1,8 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:rfid_c72_plugin_example/rfid_scanner.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:rfid_c72_plugin_example/scanner_screen.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
   runApp(const MyApp());
+  await requestPermissions();
+}
+
+Future<void> requestPermissions() async {
+  // Request storage permissions
+  Map<Permission, PermissionStatus> statuses = await [
+    Permission.storage,
+    Permission.manageExternalStorage,
+  ].request();
 }
 
 class MyApp extends StatefulWidget {
@@ -17,7 +29,7 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     return const MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: RfidScanner(),
+      home: ScannerScreen(),
     );
   }
 }
