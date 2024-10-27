@@ -13,6 +13,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
   final List<String> _scannedBarcodes = [];
   final Set<String> _scannedRfidTags = {};
   bool _isContinuousReading = false;
+  bool _isBarcodeScanning = false;
 
   @override
   void initState() {
@@ -36,6 +37,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
       try {
         // Parse the JSON string containing RFID data
         final List<TagEpc> tags = TagEpc.parseTags(event.toString());
+        print('RFID tags: $tags');
         setState(() {
           for (var tag in tags) {
             final epc = tag.epc;
@@ -49,15 +51,29 @@ class _ScannerScreenState extends State<ScannerScreen> {
   }
 
   void _handleBarcodeScan(dynamic event) {
+    print('Barcode scan event: $event');
     if (event != null) {
       setState(() {
-        _scannedBarcodes.add(event.toString());
+        _isBarcodeScanning = false;
+        if (event.toString() != '-1') {
+          _scannedBarcodes.add(event.toString());
+        }
       });
     }
   }
 
   Future<void> _startSingleRfidRead() async {
     await RfidC72Plugin.startRfidSingle;
+  }
+
+  Future<void> _clearData() async {
+    // Clear data
+    bool? result = await RfidC72Plugin.clearData;
+    print("Clear data result: $result");
+    setState(() {
+      _scannedBarcodes.clear();
+      _scannedRfidTags.clear();
+    });
   }
 
   Future<void> _toggleContinuousRfidRead() async {
@@ -72,8 +88,19 @@ class _ScannerScreenState extends State<ScannerScreen> {
     }
   }
 
-  Future<void> _scanBarcode() async {
-    await RfidC72Plugin.scanBarcode;
+  Future<void> _toggleScanBarcode() async {
+    setState(() {
+      if (_isBarcodeScanning) {
+        _isBarcodeScanning = false;
+      } else {
+        _isBarcodeScanning = true;
+      }
+    });
+    if (_isBarcodeScanning) {
+      await RfidC72Plugin.scanBarcode;
+    } else {
+      await RfidC72Plugin.stopScanBarcode;
+    }
   }
 
   @override
@@ -101,8 +128,11 @@ class _ScannerScreenState extends State<ScannerScreen> {
                   child: Text(_isContinuousReading ? 'Stop Reading' : 'Continuous Read'),
                 ),
                 ElevatedButton(
-                  onPressed: _scanBarcode,
-                  child: const Text('Scan Barcode'),
+                  onPressed: _toggleScanBarcode,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _isBarcodeScanning ? Colors.red : null,
+                  ),
+                  child: Text(_isBarcodeScanning ? 'Stop Barcode Scan' : 'Scan Barcode'),
                 ),
               ],
             ),
@@ -148,6 +178,13 @@ class _ScannerScreenState extends State<ScannerScreen> {
                 ],
               ),
             ),
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.max,
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              ElevatedButton(onPressed: _clearData, child: const Text('Clear all')),
+            ],
           ),
         ],
       ),

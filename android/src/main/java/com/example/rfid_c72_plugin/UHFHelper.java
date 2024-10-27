@@ -143,6 +143,9 @@ public class UHFHelper {
                             barcodeHandler.sendMessage(msg);
                             Log.e(TAG,"Scanned data: " + scannedBarcode);
                         } else {
+                            Message msg = barcodeHandler.obtainMessage();
+                            msg.obj = "-1";
+                            barcodeHandler.sendMessage(msg);
                             Log.e(TAG, "Scan failed with code: " + barcodeEntity.getResultCode());
                         }
                     }
