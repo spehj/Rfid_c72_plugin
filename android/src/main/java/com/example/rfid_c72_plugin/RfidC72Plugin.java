@@ -16,7 +16,7 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
-import io.flutter.plugin.common.PluginRegistry.Registrar;
+
 
 /**
  * RfidC72Plugin
@@ -46,53 +46,17 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
   private static PublishSubject<String> tagsStatusSubject = PublishSubject.create();
   private static PublishSubject<String> barcodeScanSubject = PublishSubject.create();
 
-  // This static function is optional and equivalent to onAttachedToEngine. It supports the old
-  // pre-Flutter-1.12 Android projects. You are encouraged to continue supporting
-  // plugin registration via this function while apps migrate to use the new Android APIs
-  // post-flutter-1.12 via https://flutter.dev/go/android-project-migration.
-  //
-  // It is encouraged to share logic between onAttachedToEngine and registerWith to keep
-  // them functionally equivalent. Only one of onAttachedToEngine or registerWith will be called
-  // depending on the user's project. onAttachedToEngine or registerWith must both be defined
-  // in the same class.
-  public static void registerWith(Registrar registrar) {
-    final MethodChannel channel = new MethodChannel(registrar.messenger(), "rfid_c72_plugin");
-    initConnectedEvent(registrar.messenger());
-    initRfidReadEvent(registrar.messenger());
-    initBarcodeReadEvent(registrar.messenger());
-    channel.setMethodCallHandler(new RfidC72Plugin());
-
-    UHFHelper.getInstance().init(registrar.context());
-
-    // This feeds the RFID reads into the stream
-    UHFHelper.getInstance().setUhfListener(new UHFListener() {
-      @Override
-      public void onRfidRead(String tagsJson) {
-        if (tagsJson != null)
-          tagsStatusSubject.onNext(tagsJson);
-      }
-      
-      @Override
-      public void onBarcodeRead(String barcodeScan) {
-        if (barcodeScan != null)
-          barcodeScanSubject.onNext(barcodeScan);
-      }
-
-      @Override
-      public void onRfidConnect(boolean isRfidConnected, int powerLevel) {
-        connectedStatusSubject.onNext(isRfidConnected);
-      }
-    });
-  }
-
   @Override
-  public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
-    final MethodChannel channel = new MethodChannel(flutterPluginBinding.getBinaryMessenger(), "rfid_c72_plugin");
-    initConnectedEvent(flutterPluginBinding.getBinaryMessenger());
-    initRfidReadEvent(flutterPluginBinding.getBinaryMessenger());
-    initBarcodeReadEvent(flutterPluginBinding.getBinaryMessenger());
-    Context applicationContext = flutterPluginBinding.getApplicationContext();
+  public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
+    BinaryMessenger messenger = binding.getBinaryMessenger();
+    final MethodChannel channel = new MethodChannel(messenger, "rfid_c72_plugin");
     channel.setMethodCallHandler(new RfidC72Plugin());
+    // Initialize your event channels and listeners
+    initConnectedEvent(messenger);
+    initRfidReadEvent(messenger);
+    initBarcodeReadEvent(messenger);
+
+    Context applicationContext = binding.getApplicationContext();
     UHFHelper.getInstance().init(applicationContext);
     UHFHelper.getInstance().setUhfListener(new UHFListener() {
       @Override
@@ -100,13 +64,11 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
         if (tagsJson != null)
           tagsStatusSubject.onNext(tagsJson);
       }
-
       @Override
       public void onBarcodeRead(String barcodeScan) {
         if (barcodeScan != null)
           barcodeScanSubject.onNext(barcodeScan);
       }
-
       @Override
       public void onRfidConnect(boolean isRfidConnected, int powerLevel) {
         connectedStatusSubject.onNext(isRfidConnected);
