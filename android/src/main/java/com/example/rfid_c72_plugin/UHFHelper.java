@@ -178,21 +178,29 @@ public class UHFHelper {
      */
     private void sendTagListUpdateToListener() {
         if (uhfListener == null) return;
-        JSONArray jsonArray = new JSONArray();
+
+        StringBuilder jsonBuilder = new StringBuilder("[");
+        boolean first = true;
+
         for (EPC epcTag : tagList.values()) {
-            try {
-                JSONObject json = new JSONObject();
-                json.put(TagKey.ID, Objects.requireNonNull(epcTag).getId());
-                json.put(TagKey.EPC, epcTag.getEpc());
-                json.put(TagKey.RSSI, epcTag.getRssi());
-                json.put(TagKey.COUNT, epcTag.getCount());
-                jsonArray.put(json);
-            } catch (JSONException e) {
-                Log.e(TAG, "Error creating JSON for tag: " + epcTag.getEpc(), e);
+            if (!first) {
+                jsonBuilder.append(",");
+            } else {
+                first = false;
             }
+
+            jsonBuilder.append("{\"")
+                    .append(TagKey.ID).append("\":\"").append(epcTag.getId()).append("\",\"")
+                    .append(TagKey.EPC).append("\":\"").append(epcTag.getEpc()).append("\",\"")
+                    .append(TagKey.RSSI).append("\":\"").append(epcTag.getRssi()).append("\",\"")
+                    .append(TagKey.COUNT).append("\":\"").append(epcTag.getCount()).append("\"}");
         }
+
+        jsonBuilder.append("]");
+        final String jsonString = jsonBuilder.toString();
+
         new Handler(Looper.getMainLooper()).post(() ->
-                uhfListener.onRfidRead(jsonArray.toString()));
+                uhfListener.onRfidRead(jsonString));
     }
 
     public String readBarcode() {
