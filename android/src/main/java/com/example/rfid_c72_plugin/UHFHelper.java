@@ -6,7 +6,6 @@ import android.os.Looper;
 import android.os.Message;
 import android.text.TextUtils;
 import android.util.Log;
-import android.util.LruCache;
 
 import com.rscja.barcode.BarcodeDecoder;
 import com.rscja.barcode.BarcodeFactory;
@@ -20,31 +19,19 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
-import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public class UHFHelper {
     private static final String TAG = "UHFHelper";
-    private static final int MAX_TAG_CACHE_SIZE = 1000;
-
-    // Adaptive batch update settings
-    private static final int MIN_BATCH_INTERVAL_MS = 100;
-    private static final int MAX_BATCH_INTERVAL_MS = 500;
-    private static final int DEFAULT_BATCH_INTERVAL_MS = 200;
-    private int currentBatchIntervalMs = DEFAULT_BATCH_INTERVAL_MS;
-
-    // Object pool size
-    private static final int OBJECT_POOL_SIZE = 50;
+    private static final int MAX_TAG_CACHE_SIZE = 1000; // Limit the number of tags to prevent memory issues
+    private static final int BATCH_UPDATE_INTERVAL_MS = 200; // Send batch updates every 200ms instead of each tag
 
     private static UHFHelper instance;
     public RFIDWithUHFUART mReader;
@@ -54,7 +41,7 @@ public class UHFHelper {
     private Handler barcodeHandler;
     private UHFListener uhfListener;
 
-    // Thread-safe flags
+    // Use AtomicBoolean for thread-safe flag operations
     private final AtomicBoolean continuousRfidReadActive = new AtomicBoolean(false);
     private final AtomicBoolean continuousBarcodeReadActive = new AtomicBoolean(false);
     private final AtomicBoolean isRfidConnected = new AtomicBoolean(false);
@@ -62,35 +49,15 @@ public class UHFHelper {
     private final AtomicBoolean isBarcodeInitialized = new AtomicBoolean(false);
     private final AtomicBoolean pendingUpdates = new AtomicBoolean(false);
 
-    // Tag rate tracking for adaptive updates
-    private final AtomicInteger tagsInLastBatch = new AtomicInteger(0);
-
     // Use ConcurrentHashMap for thread safety
     private ConcurrentHashMap<String, EPC> tagList;
     private ConcurrentHashMap<String, EPC> newTagsBatch;
-    private Set<String> changedTagsInBatch;
-
-    // Thread pools
-    private ScheduledExecutorService scheduler;
-    private ExecutorService processingPool;
-
-    // Object pool for EPC tags to reduce GC pressure
-    private LruCache<String, EPC> tagObjectPool;
-
-    // Last sent JSON to avoid duplicate updates
-    private String lastSentJson = "";
 
     private String scannedBarcode;
     private Context context;
+    private ScheduledExecutorService scheduler;
 
     private UHFHelper() {
-        // Set up the object pool
-        tagObjectPool = new LruCache<String, EPC>(OBJECT_POOL_SIZE) {
-            @Override
-            protected EPC create(String key) {
-                return new EPC();
-            }
-        };
     }
 
     public static UHFHelper getInstance() {
@@ -116,11 +83,7 @@ public class UHFHelper {
         this.context = context;
         tagList = new ConcurrentHashMap<>();
         newTagsBatch = new ConcurrentHashMap<>();
-        changedTagsInBatch = new HashSet<>();
-
-        // Create thread pools
         scheduler = Executors.newSingleThreadScheduledExecutor();
-        processingPool = Executors.newFixedThreadPool(2); // Pool for processing tasks
 
         clearData();
 
@@ -131,47 +94,25 @@ public class UHFHelper {
             new Handler(Looper.getMainLooper()).post(this::initHandlers);
         }
 
-        // Schedule batch processing of tags with initial interval
-        scheduleNextBatchUpdate();
-    }
-
-    private void scheduleNextBatchUpdate() {
-        scheduler.schedule(() -> {
-            processBatchUpdates();
-
-            // Adaptive batch interval based on tag read rate
-            int tagCount = tagsInLastBatch.getAndSet(0);
-
-            // Adjust batch interval based on tag density
-            if (tagCount > 50) {
-                // Many tags - process more frequently
-                currentBatchIntervalMs = Math.max(MIN_BATCH_INTERVAL_MS, currentBatchIntervalMs - 20);
-            } else if (tagCount < 5) {
-                // Few tags - process less frequently
-                currentBatchIntervalMs = Math.min(MAX_BATCH_INTERVAL_MS, currentBatchIntervalMs + 20);
-            }
-
-            // Schedule next update with the new interval
-            scheduleNextBatchUpdate();
-        }, currentBatchIntervalMs, TimeUnit.MILLISECONDS);
+        // Schedule batch processing of tags
+        scheduler.scheduleAtFixedRate(this::processBatchUpdates,
+                BATCH_UPDATE_INTERVAL_MS, BATCH_UPDATE_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
 
     private void initHandlers() {
         rfidHandler = new Handler(Looper.getMainLooper()) {
             @Override
             public void handleMessage(Message msg) {
-                // Offload tag processing to background thread
-                processingPool.execute(() -> {
-                    String result = msg.obj + "";
-                    String[] strs = result.split("@");
-                    addEPCToList(strs[0], strs[1]);
-                });
+                String result = msg.obj + "";
+                String[] strs = result.split("@");
+                addEPCToList(strs[0], strs[1]);
             }
         };
 
         barcodeHandler = new Handler(Looper.getMainLooper()) {
             @Override
             public void handleMessage(Message msg) {
+                Log.d(TAG, "Received barcode message");
                 String result = msg.obj + "";
                 recordBarcodeScan(result);
             }
@@ -186,120 +127,71 @@ public class UHFHelper {
         // Reset the flag
         pendingUpdates.set(false);
 
-        // Process batch in background thread
-        processingPool.execute(() -> {
-            // Add all new tags to the main list
-            for (Map.Entry<String, EPC> entry : newTagsBatch.entrySet()) {
-                String epc = entry.getKey();
-                EPC tag = entry.getValue();
+        // Add all new tags to the main list
+        for (Map.Entry<String, EPC> entry : newTagsBatch.entrySet()) {
+            String epc = entry.getKey();
+            EPC tag = entry.getValue();
 
-                if (tagList.containsKey(epc)) {
-                    EPC existingTag = tagList.get(epc);
-                    if (existingTag != null) {
-                        int tagCount = Integer.parseInt(existingTag.getCount()) +
-                                Integer.parseInt(tag.getCount());
-                        existingTag.setCount(String.valueOf(tagCount));
-                        existingTag.setRssi(tag.getRssi()); // Update with latest RSSI
-                        changedTagsInBatch.add(epc);
-                    }
-                } else {
-                    tagList.put(epc, tag);
-                    changedTagsInBatch.add(epc);
+            if (tagList.containsKey(epc)) {
+                EPC existingTag = tagList.get(epc);
+                if (existingTag != null) {
+                    int tagCount = Integer.parseInt(existingTag.getCount()) +
+                            Integer.parseInt(tag.getCount());
+                    existingTag.setCount(String.valueOf(tagCount));
+                    existingTag.setRssi(tag.getRssi()); // Update with latest RSSI
                 }
+            } else {
+                tagList.put(epc, tag);
             }
-
-            // Clear the batch and make tag objects available for reuse
-            for (EPC tag : newTagsBatch.values()) {
-                recycleTagObject(tag);
-            }
-            newTagsBatch.clear();
-
-            // Enforce size limit on the main tag list if needed
-            if (tagList.size() > MAX_TAG_CACHE_SIZE) {
-                trimTagList();
-            }
-
-            // Only send update if there are changes
-            if (!changedTagsInBatch.isEmpty()) {
-                // Send only changed tags if there are fewer than 50% changed
-                boolean sendFullUpdate = changedTagsInBatch.size() > tagList.size() * 0.5;
-                sendTagListUpdateToListener(sendFullUpdate);
-                changedTagsInBatch.clear();
-            }
-        });
-    }
-
-    private void recycleTagObject(EPC tag) {
-        // Reset tag to initial state and return to pool
-        if (tag != null) {
-            tag.setId("");
-            tag.setEpc("");
-            tag.setCount("0");
-            tag.setRssi("0");
-            // Tag will be garbage collected or reused by the LruCache
         }
-    }
 
-    private EPC getTagFromPool() {
-        // Get a tag from the pool or create a new one
-        return tagObjectPool.get("tag");
+        // Clear the batch
+        newTagsBatch.clear();
+
+        // Enforce size limit on the main tag list if needed
+        if (tagList.size() > MAX_TAG_CACHE_SIZE) {
+            trimTagList();
+        }
+
+        // Send update to the listener
+        sendTagListUpdateToListener();
     }
 
     private void trimTagList() {
-        // Remove oldest entries (or least seen, depending on strategy)
+        // This is a simple approach - remove oldest entries
+        // A more sophisticated approach could prioritize by RSSI or count
         int toRemove = tagList.size() - MAX_TAG_CACHE_SIZE;
+        int removed = 0;
 
-        // Find entries with lowest count
-        Map.Entry<String, EPC>[] entries = tagList.entrySet().toArray(new Map.Entry[0]);
-        Arrays.sort(entries, (a, b) -> {
-            int countA = Integer.parseInt(a.getValue().getCount());
-            int countB = Integer.parseInt(b.getValue().getCount());
-            return Integer.compare(countA, countB);
-        });
-
-        // Remove the lowest count entries
-        for (int i = 0; i < toRemove && i < entries.length; i++) {
-            tagList.remove(entries[i].getKey());
+        for (String key : tagList.keySet()) {
+            tagList.remove(key);
+            removed++;
+            if (removed >= toRemove) break;
         }
     }
 
-    private void sendTagListUpdateToListener(boolean fullUpdate) {
+    private void sendTagListUpdateToListener() {
         if (uhfListener == null) return;
 
         try {
             final JSONArray jsonArray = new JSONArray();
 
-            // Choose which tags to send
-            Set<String> tagsToSend = fullUpdate ? tagList.keySet() : changedTagsInBatch;
-
-            for (String epc : tagsToSend) {
-                EPC epcTag = tagList.get(epc);
-                if (epcTag != null) {
-                    JSONObject json = new JSONObject();
-                    try {
-                        json.put(TagKey.ID, Objects.requireNonNull(epcTag).getId());
-                        json.put(TagKey.EPC, epcTag.getEpc());
-                        json.put(TagKey.RSSI, epcTag.getRssi());
-                        json.put(TagKey.COUNT, epcTag.getCount());
-                        jsonArray.put(json);
-                    } catch (JSONException e) {
-                        Log.e(TAG, "Error creating JSON object", e);
-                    }
+            for (EPC epcTag : tagList.values()) {
+                JSONObject json = new JSONObject();
+                try {
+                    json.put(TagKey.ID, Objects.requireNonNull(epcTag).getId());
+                    json.put(TagKey.EPC, epcTag.getEpc());
+                    json.put(TagKey.RSSI, epcTag.getRssi());
+                    json.put(TagKey.COUNT, epcTag.getCount());
+                    jsonArray.put(json);
+                } catch (JSONException e) {
+                    Log.e(TAG, "Error creating JSON object", e);
                 }
             }
 
-            // Check if this update is different from the last one
-            final String jsonString = jsonArray.toString();
-            if (jsonString.equals(lastSentJson) && !fullUpdate) {
-                // Skip duplicate update
-                return;
-            }
-
-            lastSentJson = jsonString;
-
             // Send on main thread
             new Handler(Looper.getMainLooper()).post(() ->
-                    uhfListener.onRfidRead(jsonString));
+                    uhfListener.onRfidRead(jsonArray.toString()));
 
         } catch (Exception e) {
             Log.e(TAG, "Error sending tag updates", e);
@@ -322,20 +214,6 @@ public class UHFHelper {
         if (mReader != null) {
             boolean connected = mReader.init(context);
             isRfidConnected.set(connected);
-
-            if (connected) {
-                // Optimize reader settings for performance
-                try {
-                    // Set maximum performance mode - adjust if battery life is an issue
-                    mReader.setPower(30); // Maximum power
-                    // Set faster inventory mode if available
-                    // Check device documentation for any available fast scan modes
-                }
-                catch (Exception e) {
-                    Log.e(TAG, "Error setting reader performance options", e);
-                }
-            }
-
             notifyRfidConnect(connected, 0);
             return connected;
         }
@@ -440,14 +318,6 @@ public class UHFHelper {
         if (mReader != null) {
             isInventoryRunning.set(true);
             continuousRfidReadActive.set(true);
-
-            // Reset the batch interval to default when starting a new inventory
-            currentBatchIntervalMs = DEFAULT_BATCH_INTERVAL_MS;
-
-            // Clear existing data for a fresh start
-            newTagsBatch.clear();
-            changedTagsInBatch.clear();
-
             new RfidContinuousReadThread().start();
             return true;
         }
@@ -466,18 +336,12 @@ public class UHFHelper {
         scannedBarcode = null;
         tagList.clear();
         newTagsBatch.clear();
-        changedTagsInBatch.clear();
-        lastSentJson = "";
     }
 
     public boolean stopRfid() {
         if (mReader != null) {
             continuousRfidReadActive.set(false);
             isInventoryRunning.set(false);
-
-            // Process any remaining tags in the batch immediately
-            processBatchUpdates();
-
             mReader.stopInventory();
             mReader.setInventoryCallback(null);
             Log.d(TAG, "Stopped RFID reading");
@@ -487,44 +351,24 @@ public class UHFHelper {
     }
 
     public void closeRfidReader() {
-        // Stop all operations first
         continuousRfidReadActive.set(false);
         if (mReader != null) {
             mReader.free();
             isRfidConnected.set(false);
         }
 
-        // Shut down thread pools properly
-        shutdownThreadPools();
+        // Also shut down the scheduler
+        if (scheduler != null && !scheduler.isShutdown()) {
+            scheduler.shutdown();
+            try {
+                scheduler.awaitTermination(1, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Error shutting down scheduler", e);
+                Thread.currentThread().interrupt();
+            }
+        }
 
         clearData();
-    }
-
-    private void shutdownThreadPools() {
-        // Proper shutdown sequence for thread pools
-        if (scheduler != null && !scheduler.isShutdown()) {
-            scheduler.shutdownNow(); // Force immediate shutdown
-            try {
-                if (!scheduler.awaitTermination(500, TimeUnit.MILLISECONDS)) {
-                    Log.w(TAG, "Scheduler didn't terminate in time");
-                }
-            } catch (InterruptedException e) {
-                Log.e(TAG, "Scheduler shutdown interrupted", e);
-                Thread.currentThread().interrupt();
-            }
-        }
-
-        if (processingPool != null && !processingPool.isShutdown()) {
-            processingPool.shutdownNow(); // Force immediate shutdown
-            try {
-                if (!processingPool.awaitTermination(500, TimeUnit.MILLISECONDS)) {
-                    Log.w(TAG, "Processing pool didn't terminate in time");
-                }
-            } catch (InterruptedException e) {
-                Log.e(TAG, "Processing pool shutdown interrupted", e);
-                Thread.currentThread().interrupt();
-            }
-        }
     }
 
     public boolean setPowerLevel(String level) {
@@ -546,11 +390,8 @@ public class UHFHelper {
             return;
         }
 
-        // Increment tag count for the current batch
-        tagsInLastBatch.incrementAndGet();
-
-        // Get tag from object pool instead of creating new object
-        EPC tag = getTagFromPool();
+        // Add to the batch instead of processing immediately
+        EPC tag = new EPC();
         tag.setId("");
         tag.setEpc(epc);
         tag.setCount("1");
@@ -563,9 +404,6 @@ public class UHFHelper {
                 int tagCount = Integer.parseInt(existingTag.getCount()) + 1;
                 existingTag.setCount(String.valueOf(tagCount));
                 existingTag.setRssi(rssi); // Update with latest RSSI
-
-                // Return the unused tag to the pool
-                recycleTagObject(tag);
             }
         } else {
             newTagsBatch.put(epc, tag);
@@ -594,11 +432,7 @@ public class UHFHelper {
     }
 
     class RfidContinuousReadThread extends Thread {
-        @Override
         public void run() {
-            // Set thread priority to improve performance
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO);
-
             mReader.setInventoryCallback(new IUHFInventoryCallback() {
                 @Override
                 public void callback(UHFTAGInfo uhftagInfo) {
@@ -623,7 +457,7 @@ public class UHFHelper {
             // More efficient polling loop with proper sleep
             while (continuousRfidReadActive.get() && isInventoryRunning.get()) {
                 try {
-                    Thread.sleep(20); // Reduced sleep time for faster response
+                    Thread.sleep(50);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
@@ -636,11 +470,7 @@ public class UHFHelper {
     }
 
     class BarcodeContinuousReadThread extends Thread {
-        @Override
         public void run() {
-            // Set thread priority
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_MORE_FAVORABLE);
-
             if (barcodeDecoder == null) {
                 barcodeDecoder = BarcodeFactory.getInstance().getBarcodeDecoder();
             }
@@ -667,7 +497,7 @@ public class UHFHelper {
             // More efficient wait loop
             while (continuousBarcodeReadActive.get()) {
                 try {
-                    Thread.sleep(50);
+                    Thread.sleep(100);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
