@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/services.dart';
+import 'package:rfid_c72_plugin/location_data.dart';
 
 class RfidC72Plugin {
   static const MethodChannel _channel = MethodChannel('rfid_c72_plugin');
@@ -10,12 +11,12 @@ class RfidC72Plugin {
     return version;
   }
 
-  static const EventChannel connectedStatusSubjectEventChannel =
-  EventChannel('connectedStatusSubject');
+  static const EventChannel connectedStatusSubjectEventChannel = EventChannel('connectedStatusSubject');
   // Used in flutter:
   // RfidC72Plugin.tagsStatusSubjectEventChannel.receiveBroadcastStream().listen(updateTags);
   static const EventChannel tagsStatusSubjectEventChannel = EventChannel('tagsStatusSubject');
   static const EventChannel barcodeScanSubjectEventChannel = EventChannel('barcodeScanSubject');
+  static const EventChannel locationChannel = EventChannel('locationValueSubject');
 
   static Future<bool?> get isContinuousRfidReadActive async {
     return _channel.invokeMethod('isContinuousRfidReadActive');
@@ -69,23 +70,50 @@ class RfidC72Plugin {
     return _channel.invokeMethod('stopScanBarcode');
   }
 
-
   static Future<bool?> get closeScan async {
     return _channel.invokeMethod('closeScan');
   }
 
   static Future<bool?> setPowerLevel(String value) async {
-    return _channel
-        .invokeMethod('setPowerLevel', <String, String>{'value': value});
+    return _channel.invokeMethod('setPowerLevel', <String, String>{'value': value});
   }
 
   static Future<bool?> setWorkArea(String value) async {
-    return _channel
-        .invokeMethod('setWorkArea', <String, String>{'value': value});
+    return _channel.invokeMethod('setWorkArea', <String, String>{'value': value});
   }
 
   static Future<String?> get readBarcode async {
     final String? barcode = await _channel.invokeMethod('readBarcode');
     return barcode;
+  }
+
+  // Start tag location
+  static Future<bool> startTagLocation(String epc) async {
+    final result = await _channel.invokeMethod('startTagLocation', {'epc': epc});
+    return result ?? false;
+  }
+
+  // Stop tag location
+  static Future<bool> stopTagLocation() async {
+    final result = await _channel.invokeMethod('stopTagLocation');
+    return result ?? false;
+  }
+
+  // Check if location is running
+  static Future<bool> isLocationRunning() async {
+    final result = await _channel.invokeMethod('isLocationRunning');
+    return result ?? false;
+  }
+
+  // Set location dynamic distance
+  static Future<bool> setLocationDynamicDistance(int value) async {
+    final result = await _channel.invokeMethod('setLocationDynamicDistance', {'value': value});
+    return result ?? false;
+  }
+
+  static Stream<LocationData> get locationValues {
+    return locationChannel.receiveBroadcastStream().map<LocationData>((value) {
+      return LocationData.fromJson(value);
+    });
   }
 }

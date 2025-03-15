@@ -42,9 +42,19 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
   private static final String CHANNEL_stopScanBarcode = "stopScanBarcode";
   private static final String CHANNEL_readBarcode = "readBarcode";
   private static final String CHANNEL_closeScanBarcode="closeScanBarcode";
+
+  private static final String CHANNEL_locationValueSubject = "locationValueSubject";
+
+  private static final String CHANNEL_startTagLocation = "startTagLocation";
+  private static final String CHANNEL_stopTagLocation = "stopTagLocation";
+  private static final String CHANNEL_isLocationRunning = "isLocationRunning";
+  private static final String CHANNEL_setLocationDynamicDistance = "setLocationDynamicDistance";
+
   private static PublishSubject<Boolean> connectedStatusSubject = PublishSubject.create();
   private static PublishSubject<String> tagsStatusSubject = PublishSubject.create();
   private static PublishSubject<String> barcodeScanSubject = PublishSubject.create();
+
+  private static PublishSubject<LocationData> locationValueSubject = PublishSubject.create();
 
   @Override
   public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
@@ -55,6 +65,8 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
     initConnectedEvent(messenger);
     initRfidReadEvent(messenger);
     initBarcodeReadEvent(messenger);
+    initLocationValueEvent(messenger);
+
 
     Context applicationContext = binding.getApplicationContext();
     UHFHelper.getInstance().init(applicationContext);
@@ -73,6 +85,14 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
       public void onRfidConnect(boolean isRfidConnected, int powerLevel) {
         connectedStatusSubject.onNext(isRfidConnected);
       }
+
+
+      @Override
+      public void onLocationValue(int value, boolean valid) {
+        locationValueSubject.onNext(new LocationData(value, valid));
+      }
+
+
     });
   }
 
@@ -189,6 +209,51 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
   }
 
 
+  private static void initLocationValueEvent(BinaryMessenger messenger) {
+    final EventChannel locationEventChannel = new EventChannel(messenger, CHANNEL_locationValueSubject);
+    locationEventChannel.setStreamHandler(new EventChannel.StreamHandler() {
+      @Override
+      public void onListen(Object o, final EventChannel.EventSink eventSink) {
+        Log.d("RfidC72Plugin", "Location event channel - onListen called");
+        locationValueSubject
+                .subscribeOn(Schedulers.newThread())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(new Observer<LocationData>() {
+                  @Override
+                  public void onSubscribe(Disposable d) {
+                    Log.d("RfidC72Plugin", "Location subscription started");
+                  }
+
+                  @Override
+                  public void onNext(LocationData value) {
+                    Log.d("RfidC72Plugin", "Location value received: " + value.getValue());
+                    try {
+                      eventSink.success(value);
+                    } catch (Exception e) {
+                      Log.e("RfidC72Plugin", "Error sending location data to Flutter", e);
+                    }
+                  }
+
+                  @Override
+                  public void onError(Throwable e) {
+                    Log.e("RfidC72Plugin", "Location stream error", e);
+                  }
+
+                  @Override
+                  public void onComplete() {
+                    Log.d("RfidC72Plugin", "Location stream completed");
+                  }
+                });
+      }
+
+      @Override
+      public void onCancel(Object o) {
+        Log.d("RfidC72Plugin", "Location event channel - onCancel called");
+      }
+    });
+  }
+
+
   @Override
   public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
     handleMethods(call, result);
@@ -254,6 +319,24 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
       case CHANNEL_readBarcode:
         result.success(UHFHelper.getInstance().readBarcode());
         break;
+      case CHANNEL_startTagLocation:
+        String epc = call.argument("epc");
+        result.success(UHFHelper.getInstance().startTagLocation(epc));
+        break;
+
+      case CHANNEL_stopTagLocation:
+        result.success(UHFHelper.getInstance().stopTagLocation());
+        break;
+
+      case CHANNEL_isLocationRunning:
+        result.success(UHFHelper.getInstance().isLocationRunning());
+        break;
+
+      case CHANNEL_setLocationDynamicDistance:
+        int distance = call.argument("value");
+        result.success(UHFHelper.getInstance().setLocationDynamicDistance(distance));
+        break;
+
       default:
         result.notImplemented();
     }

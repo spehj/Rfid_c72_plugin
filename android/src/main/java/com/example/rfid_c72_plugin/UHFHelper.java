@@ -14,13 +14,9 @@ import com.rscja.deviceapi.RFIDWithUHFUART;
 import com.rscja.deviceapi.entity.BarcodeEntity;
 import com.rscja.deviceapi.entity.UHFTAGInfo;
 import com.rscja.deviceapi.interfaces.IUHFInventoryCallback;
-
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.rscja.deviceapi.interfaces.IUHFLocationCallback;
 
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -56,6 +52,9 @@ public class UHFHelper {
     private final AtomicBoolean isBarcodeInitialized = new AtomicBoolean(false);
     private final AtomicBoolean pendingUpdates = new AtomicBoolean(false);
 
+    private final AtomicBoolean isLocationRunning = new AtomicBoolean(false);
+
+
     // Thread-safe maps for maintaining the tag list and a batch of new tag updates
     private ConcurrentHashMap<String, EPC> tagList;
     private ConcurrentHashMap<String, EPC> newTagsBatch;
@@ -83,6 +82,7 @@ public class UHFHelper {
         this.uhfListener = listener;
     }
 
+
     public void init(Context context) {
         this.context = context;
         tagList = new ConcurrentHashMap<>();
@@ -99,7 +99,7 @@ public class UHFHelper {
         }
 
         // Schedule the batch update processor
-        scheduler.scheduleAtFixedRate(this::processBatchUpdates, BATCH_UPDATE_INTERVAL_MS,
+        scheduler.scheduleWithFixedDelay(this::processBatchUpdates, BATCH_UPDATE_INTERVAL_MS,
                 BATCH_UPDATE_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
 
@@ -320,6 +320,102 @@ public class UHFHelper {
         return false;
     }
 
+    /**
+     * Starts locating a specific RFID tag based on its EPC
+     * @param epc The EPC of the tag to locate
+     * @return true if started successfully, false otherwise
+     */
+    public boolean startTagLocation(String epc) {
+        if (mReader == null || !isRfidConnected.get() || epc == null || epc.isEmpty()) {
+            Log.e(TAG, "Cannot start tag location - reader not connected or invalid EPC");
+            return false;
+        }
+
+        if (isInventoryRunning.get() || continuousRfidReadActive.get()) {
+            stopRfid(); // Stop any ongoing inventory before starting location
+        }
+
+        if (isLocationRunning.get()) {
+            stopTagLocation(); // Stop current location if already running
+        }
+        // Convert epc to lowercase
+        epc = epc.toLowerCase();
+        boolean success = mReader.startLocation(context, epc, RFIDWithUHFUART.Bank_EPC, 0,
+                new IUHFLocationCallback() {
+                    @Override
+                    public void getLocationValue(int value, boolean valid) {
+                        Log.d(TAG, "LOCATION CALLBACK RECEIVED: value=" + value + ", valid=" + valid);
+                        if (uhfListener != null) {
+                            new Handler(Looper.getMainLooper()).post(() ->
+                                    uhfListener.onLocationValue(value, valid));
+                        }
+                    }
+                });
+
+        Log.d(TAG, "LOCATION SUCCESS: " + success);
+
+        if (success) {
+            isLocationRunning.set(true);
+            Log.d(TAG, "Tag location started for EPC: " + epc);
+
+            // Start a polling thread to keep the location operation active
+            new LocationPollingThread().start();
+        }
+
+
+        return success;
+    }
+
+    class LocationPollingThread extends Thread {
+        @Override
+        public void run() {
+            Log.d(TAG, "Location polling thread started");
+            while (isLocationRunning.get()) {
+                try {
+                    // Poll at a reasonable interval
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            Log.d(TAG, "Location polling thread stopped");
+        }
+    }
+
+    /**
+     * Stops the currently running tag location operation
+     * @return true if stopped successfully, false otherwise
+     */
+    public boolean stopTagLocation() {
+        if (mReader != null && isLocationRunning.get()) {
+            boolean success = mReader.stopLocation();
+            isLocationRunning.set(false);
+            Log.d(TAG, "Tag location stopped, result: " + success);
+            return success;
+        }
+        return false;
+    }
+    /**
+     * Checks if tag location is currently running
+     * @return true if location is running, false otherwise
+     */
+    public boolean isLocationRunning() {
+        return isLocationRunning.get();
+    }
+
+    /**
+     * Sets the dynamic distance for radar positioning
+     * @param value Value between 1-30
+     * @return true if set successfully, false otherwise
+     */
+    public boolean setLocationDynamicDistance(int value) {
+        if (mReader != null && isRfidConnected.get()) {
+            return mReader.setDynamicDistance(value);
+        }
+        return false;
+    }
+
     public boolean startBarcodeContinuous() {
         continuousBarcodeReadActive.set(true);
         new BarcodeContinuousReadThread().start();
@@ -349,6 +445,10 @@ public class UHFHelper {
 
     public void closeRfidReader() {
         continuousRfidReadActive.set(false);
+        if (isLocationRunning.get()) {
+            stopTagLocation();
+        }
+
         if (mReader != null) {
             mReader.free();
             isRfidConnected.set(false);
