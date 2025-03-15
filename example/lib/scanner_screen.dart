@@ -108,6 +108,15 @@ class _ScannerScreenState extends State<ScannerScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Scanner Demo'),
+        actions: [
+          // Go to location screen
+          IconButton(
+            icon: const Icon(Icons.location_on),
+            onPressed: () {
+              Navigator.pushNamed(context, '/location');
+            },
+          ),
+        ],
       ),
       body: Column(
         children: [

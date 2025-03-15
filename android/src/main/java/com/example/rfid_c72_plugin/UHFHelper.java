@@ -2,6 +2,7 @@ package com.example.rfid_c72_plugin;
 
 import android.content.Context;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
 import android.text.TextUtils;
 import android.util.Log;
@@ -13,168 +14,269 @@ import com.rscja.deviceapi.RFIDWithUHFUART;
 import com.rscja.deviceapi.entity.BarcodeEntity;
 import com.rscja.deviceapi.entity.UHFTAGInfo;
 import com.rscja.deviceapi.interfaces.IUHFInventoryCallback;
+import com.rscja.deviceapi.interfaces.IUHFLocationCallback;
 
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-import java.util.HashMap;
-import java.util.Objects;
-
+/**
+ * Improved UHFHelper class.
+ *
+ * This version batches tag updates from the RFID reader so that updates (including RSSI changes)
+ * are processed and sent to Flutter in one go rather than per tag. It still maintains duplicate
+ * information on the native side to update RSSI values and counts.
+ */
 public class UHFHelper {
+    private static final String TAG = "UHFHelper";
+    private static final int MAX_TAG_CACHE_SIZE = 1000;  // Prevent memory issues with too many tags
+    private static final int BATCH_UPDATE_INTERVAL_MS = 200; // Batch update interval
+
     private static UHFHelper instance;
-    public RFIDWithUHFUART mReader;
 
-    String TAG="MainActivity_2D";
-
-    public BarcodeDecoder barcodeDecoder;
-    Handler rfidHandler;
-    Handler barcodeHandler;
+    private RFIDWithUHFUART mReader;
+    private BarcodeDecoder barcodeDecoder;
+    private Handler rfidHandler;
+    private Handler barcodeHandler;
     private UHFListener uhfListener;
-    private boolean continuousRfidReadActive = false;
-    private boolean continuousBarcodeReadActive = false;
-    private boolean isRfidConnected = false;
-    private boolean isInventoryRunning = false;
+    private Context context;
 
-    private boolean isBarcodeInitialized = false;
+    // Atomic flags for thread safety
+    private final AtomicBoolean continuousRfidReadActive = new AtomicBoolean(false);
+    private final AtomicBoolean continuousBarcodeReadActive = new AtomicBoolean(false);
+    private final AtomicBoolean isRfidConnected = new AtomicBoolean(false);
+    private final AtomicBoolean isInventoryRunning = new AtomicBoolean(false);
+    private final AtomicBoolean isBarcodeInitialized = new AtomicBoolean(false);
+    private final AtomicBoolean pendingUpdates = new AtomicBoolean(false);
 
-    //private boolean performSingleRead = false;
-    private HashMap<String, EPC> tagList;
+    private final AtomicBoolean isLocationRunning = new AtomicBoolean(false);
+
+
+    // Thread-safe maps for maintaining the tag list and a batch of new tag updates
+    private ConcurrentHashMap<String, EPC> tagList;
+    private ConcurrentHashMap<String, EPC> newTagsBatch;
 
     private String scannedBarcode;
 
-    private Context context;
+    // Scheduler to process batched tag updates
+    private ScheduledExecutorService scheduler;
 
-    private UHFHelper() {
-    }
+    // Private constructor (singleton)
+    private UHFHelper() { }
 
     public static UHFHelper getInstance() {
-        if (instance == null)
-            instance = new UHFHelper();
+        if (instance == null) {
+            synchronized (UHFHelper.class) {
+                if (instance == null) {
+                    instance = new UHFHelper();
+                }
+            }
+        }
         return instance;
     }
 
-    //public RFIDWithUHFUART getReader() {
-    //   return mReader;
-    //}
-
-    public static boolean isEmpty(CharSequence cs) {
-        return cs == null || cs.length() == 0;
+    public void setUhfListener(UHFListener listener) {
+        this.uhfListener = listener;
     }
 
-    public void setUhfListener(UHFListener uhfListener) {
-        this.uhfListener = uhfListener;
-    }
 
     public void init(Context context) {
         this.context = context;
-        //this.uhfListener = uhfListener;
-        tagList = new HashMap<String, EPC>();
+        tagList = new ConcurrentHashMap<>();
+        newTagsBatch = new ConcurrentHashMap<>();
+        scheduler = Executors.newSingleThreadScheduledExecutor();
 
         clearData();
 
-        rfidHandler = new Handler() {
+        // Create handlers on the main thread
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            initHandlers();
+        } else {
+            new Handler(Looper.getMainLooper()).post(this::initHandlers);
+        }
+
+        // Schedule the batch update processor
+        scheduler.scheduleWithFixedDelay(this::processBatchUpdates, BATCH_UPDATE_INTERVAL_MS,
+                BATCH_UPDATE_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void initHandlers() {
+        rfidHandler = new Handler(Looper.getMainLooper()) {
             @Override
             public void handleMessage(Message msg) {
-                String result = msg.obj + "";
-                String[] strs = result.split("@");
-                addEPCToList(strs[0], strs[1]);
+                String result = msg.obj.toString();
+                // Expected format: EPC@RSSI
+                String[] parts = result.split("@");
+                if (parts.length >= 2) {
+                    addEPCToBatch(parts[0], parts[1]);
+                }
             }
         };
 
-
-        barcodeHandler = new Handler() {
+        barcodeHandler = new Handler(Looper.getMainLooper()) {
             @Override
             public void handleMessage(Message msg) {
-                Log.e(TAG, "Received barcode message");
-                String result = msg.obj + "";
+                String result = msg.obj.toString();
                 recordBarcodeScan(result);
             }
         };
     }
 
-    public String readBarcode(){
-        if(scannedBarcode != null) {
-            return scannedBarcode;
-        }else{
-            return "FAIL";
+    /**
+     * Process all batched tag updates. If a tag already exists, update its count and RSSI.
+     * This minimizes the number of updates sent over the platform channel.
+     */
+    private void processBatchUpdates() {
+        if (newTagsBatch.isEmpty() || !pendingUpdates.get()) {
+            return;
         }
+        pendingUpdates.set(false);
+
+        // Merge new tags into the main tag list
+        for (Map.Entry<String, EPC> entry : newTagsBatch.entrySet()) {
+            String epc = entry.getKey();
+            EPC newTag = entry.getValue();
+
+            if (tagList.containsKey(epc)) {
+                EPC existingTag = tagList.get(epc);
+                if (existingTag != null) {
+                    int count = Integer.parseInt(existingTag.getCount()) + Integer.parseInt(newTag.getCount());
+                    existingTag.setCount(String.valueOf(count));
+                    existingTag.setRssi(newTag.getRssi());
+                }
+            } else {
+                tagList.put(epc, newTag);
+            }
+        }
+        newTagsBatch.clear();
+
+        if (tagList.size() > MAX_TAG_CACHE_SIZE) {
+            trimTagList();
+        }
+
+        sendTagListUpdateToListener();
+    }
+
+    /**
+     * Removes the oldest tags when the list exceeds MAX_TAG_CACHE_SIZE.
+     */
+    private void trimTagList() {
+        int toRemove = tagList.size() - MAX_TAG_CACHE_SIZE;
+        int removed = 0;
+        for (String key : tagList.keySet()) {
+            tagList.remove(key);
+            removed++;
+            if (removed >= toRemove) break;
+        }
+    }
+
+    /**
+     * Creates a JSON array of the current tags and sends it to the Flutter listener.
+     */
+    private void sendTagListUpdateToListener() {
+        if (uhfListener == null) return;
+
+        StringBuilder jsonBuilder = new StringBuilder("[");
+        boolean first = true;
+
+        for (EPC epcTag : tagList.values()) {
+            if (!first) {
+                jsonBuilder.append(",");
+            } else {
+                first = false;
+            }
+
+            jsonBuilder.append("{\"")
+                    .append(TagKey.ID).append("\":\"").append(epcTag.getId()).append("\",\"")
+                    .append(TagKey.EPC).append("\":\"").append(epcTag.getEpc()).append("\",\"")
+                    .append(TagKey.RSSI).append("\":\"").append(epcTag.getRssi()).append("\",\"")
+                    .append(TagKey.COUNT).append("\":\"").append(epcTag.getCount()).append("\"}");
+        }
+
+        jsonBuilder.append("]");
+        final String jsonString = jsonBuilder.toString();
+
+        new Handler(Looper.getMainLooper()).post(() ->
+                uhfListener.onRfidRead(jsonString));
+    }
+
+    public String readBarcode() {
+        return scannedBarcode != null ? scannedBarcode : "FAIL";
     }
 
     public boolean connectRfid() {
         try {
             mReader = RFIDWithUHFUART.getInstance();
         } catch (Exception ex) {
-            uhfListener.onRfidConnect(false, 0);
+            Log.e(TAG, "Error obtaining RFID instance", ex);
+            notifyRfidConnect(false, 0);
             return false;
         }
         if (mReader != null) {
-            isRfidConnected = mReader.init(context);
-            //mReader.setFrequencyMode(2);
-            //mReader.setPower(29);
-            uhfListener.onRfidConnect(isRfidConnected, 0);
-            return isRfidConnected;
+            boolean connected = mReader.init(context);
+            isRfidConnected.set(connected);
+            notifyRfidConnect(connected, 0);
+            return connected;
         }
-        uhfListener.onRfidConnect(false, 0);
+        notifyRfidConnect(false, 0);
         return false;
     }
 
-
+    private void notifyRfidConnect(final boolean connected, final int code) {
+        if (uhfListener != null) {
+            new Handler(Looper.getMainLooper()).post(() ->
+                    uhfListener.onRfidConnect(connected, code));
+        }
+    }
 
     public boolean connectBarcode() {
-        Log.e(TAG, "connectBarcode");
         try {
             if (barcodeDecoder == null) {
                 barcodeDecoder = BarcodeFactory.getInstance().getBarcodeDecoder();
             }
             boolean success = barcodeDecoder.open(context);
             if (success) {
-                isBarcodeInitialized = true;
+                isBarcodeInitialized.set(true);
                 BarcodeUtility.getInstance().enablePlaySuccessSound(context, true);
-
                 barcodeDecoder.setDecodeCallback(new BarcodeDecoder.DecodeCallback() {
                     @Override
                     public void onDecodeComplete(BarcodeEntity barcodeEntity) {
-                        Log.e(TAG,"BarcodeDecoder result: " + barcodeEntity.getResultCode());
-                        if(barcodeEntity.getResultCode() == BarcodeDecoder.DECODE_SUCCESS){
+                        if (barcodeEntity.getResultCode() == BarcodeDecoder.DECODE_SUCCESS) {
                             scannedBarcode = barcodeEntity.getBarcodeData();
                             Message msg = barcodeHandler.obtainMessage();
                             msg.obj = scannedBarcode;
                             barcodeHandler.sendMessage(msg);
-                            Log.e(TAG,"Scanned data: " + scannedBarcode);
                         } else {
                             Message msg = barcodeHandler.obtainMessage();
                             msg.obj = "-1";
                             barcodeHandler.sendMessage(msg);
-                            Log.e(TAG, "Scan failed with code: " + barcodeEntity.getResultCode());
                         }
                     }
                 });
             }
             return success;
         } catch (Exception e) {
-            Log.e(TAG, "Error initializing barcode scanner: " + e.getMessage());
+            Log.e(TAG, "Error initializing barcode scanner", e);
             return false;
         }
     }
 
-
-
     public boolean scanBarcode() {
-        if (!isBarcodeInitialized) {
+        if (!isBarcodeInitialized.get()) {
             Log.e(TAG, "Barcode scanner not initialized");
             return false;
         }
         barcodeDecoder.startScan();
-        Log.i(TAG, "Starting barcode scan");
         return true;
     }
 
     public boolean stopScanBarcode() {
-        if (!isBarcodeInitialized) {
+        if (!isBarcodeInitialized.get()) {
             return false;
         }
-        Log.i(TAG, "Stopping barcode scan");
         barcodeDecoder.stopScan();
         return true;
     }
@@ -182,83 +284,187 @@ public class UHFHelper {
     public boolean closeScanBarcode() {
         if (barcodeDecoder != null) {
             barcodeDecoder.close();
-            isBarcodeInitialized = false;
-            continuousBarcodeReadActive = false;
+            isBarcodeInitialized.set(false);
+            continuousBarcodeReadActive.set(false);
             return true;
         }
         return false;
     }
-
 
     public boolean startRfidSingle() {
-        if (continuousRfidReadActive || isInventoryRunning) {
-            Log.e("RFID", "Cannot perform single read while continuous read is active");
+        if (continuousRfidReadActive.get() || isInventoryRunning.get()) {
+            Log.e(TAG, "Cannot perform single read while continuous read is active");
             return false;
         }
-
         UHFTAGInfo tagInfo = mReader.inventorySingleTag();
         if (tagInfo != null) {
-            String epc = tagInfo.getEPC();
-            addEPCToList(epc, tagInfo.getRssi());
+            // Directly add to batch for processing
+            addEPCToBatch(tagInfo.getEPC(), tagInfo.getRssi());
             return true;
         }
         return false;
     }
 
-
     public boolean startRfidContinuous() {
-        if (continuousRfidReadActive || isInventoryRunning) {
-            Log.e("RFID", "Continuous read already active");
-            return true; // Already running
+        if (continuousRfidReadActive.get() || isInventoryRunning.get()) {
+            Log.e(TAG, "Continuous RFID read already active");
+            return true;
         }
-
         if (mReader != null) {
-            isInventoryRunning = true;
-            continuousRfidReadActive = true;
+            isInventoryRunning.set(true);
+            continuousRfidReadActive.set(true);
             new RfidContinuousReadThread().start();
             return true;
         }
-
-        Log.e("RFID", "mReader is null");
+        Log.e(TAG, "mReader is null");
         return false;
     }
 
+    /**
+     * Starts locating a specific RFID tag based on its EPC
+     * @param epc The EPC of the tag to locate
+     * @return true if started successfully, false otherwise
+     */
+    public boolean startTagLocation(String epc) {
+        if (mReader == null || !isRfidConnected.get() || epc == null || epc.isEmpty()) {
+            Log.e(TAG, "Cannot start tag location - reader not connected or invalid EPC");
+            return false;
+        }
+
+        if (isInventoryRunning.get() || continuousRfidReadActive.get()) {
+            stopRfid(); // Stop any ongoing inventory before starting location
+        }
+
+        if (isLocationRunning.get()) {
+            stopTagLocation(); // Stop current location if already running
+        }
+
+        boolean success = mReader.startLocation(context, epc, RFIDWithUHFUART.Bank_EPC, 32,
+                new IUHFLocationCallback() {
+                    @Override
+                    public void getLocationValue(int value, boolean valid) {
+                        Log.d(TAG, "LOCATION CALLBACK RECEIVED: value=" + value + ", valid=" + valid);
+                        if (uhfListener != null) {
+                            new Handler(Looper.getMainLooper()).post(() ->
+                                    uhfListener.onLocationValue(value, valid));
+                        }
+                    }
+                });
+
+        Log.d(TAG, "LOCATION SUCCESS: " + success);
+
+        if (success) {
+            isLocationRunning.set(true);
+            Log.d(TAG, "Tag location started for EPC: " + epc);
+
+            // Start a polling thread to keep the location operation active
+            new LocationPollingThread().start();
+        }
+
+
+        return success;
+    }
+
+    class LocationPollingThread extends Thread {
+        @Override
+        public void run() {
+            Log.d(TAG, "Location polling thread started");
+            while (isLocationRunning.get()) {
+                try {
+                    // Poll at a reasonable interval
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            Log.d(TAG, "Location polling thread stopped");
+        }
+    }
+
+    /**
+     * Stops the currently running tag location operation
+     * @return true if stopped successfully, false otherwise
+     */
+    public boolean stopTagLocation() {
+        if (mReader != null && isLocationRunning.get()) {
+            boolean success = mReader.stopLocation();
+            isLocationRunning.set(false);
+            Log.d(TAG, "Tag location stopped, result: " + success);
+            return success;
+        }
+        return false;
+    }
+    /**
+     * Checks if tag location is currently running
+     * @return true if location is running, false otherwise
+     */
+    public boolean isLocationRunning() {
+        return isLocationRunning.get();
+    }
+
+    /**
+     * Sets the dynamic distance for radar positioning
+     * @param value Value between 1-30
+     * @return true if set successfully, false otherwise
+     */
+    public boolean setLocationDynamicDistance(int value) {
+        if (mReader != null && isRfidConnected.get()) {
+            return mReader.setDynamicDistance(value);
+        }
+        return false;
+    }
 
     public boolean startBarcodeContinuous() {
-        continuousBarcodeReadActive = true;
+        continuousBarcodeReadActive.set(true);
         new BarcodeContinuousReadThread().start();
         return true;
     }
 
     public void clearData() {
         scannedBarcode = null;
-        tagList.clear();
+        if (tagList != null) {
+            tagList.clear();
+        }
+        if (newTagsBatch != null) {
+            newTagsBatch.clear();
+        }
     }
 
     public boolean stopRfid() {
         if (mReader != null) {
-            continuousRfidReadActive = false;
-            isInventoryRunning = false;
+            continuousRfidReadActive.set(false);
+            isInventoryRunning.set(false);
             mReader.stopInventory();
             mReader.setInventoryCallback(null);
-            Log.i("RFID", "Stopped RFID reading");
             return true;
         }
         return false;
     }
 
-
     public void closeRfidReader() {
-        continuousRfidReadActive = false;
+        continuousRfidReadActive.set(false);
+        if (isLocationRunning.get()) {
+            stopTagLocation();
+        }
+
         if (mReader != null) {
             mReader.free();
-            isRfidConnected = false;
+            isRfidConnected.set(false);
+        }
+        if (scheduler != null && !scheduler.isShutdown()) {
+            scheduler.shutdown();
+            try {
+                scheduler.awaitTermination(1, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Scheduler termination interrupted", e);
+                Thread.currentThread().interrupt();
+            }
         }
         clearData();
     }
 
     public boolean setPowerLevel(String level) {
-        //5 dBm : 30 dBm
         if (mReader != null) {
             return mReader.setPower(Integer.parseInt(level));
         }
@@ -266,53 +472,41 @@ public class UHFHelper {
     }
 
     public boolean setWorkArea(String area) {
-        //China Area 920~925MHz
-        //Chin2a Area 840~845MHz
-        //ETSI Area 865~868MHz
-        //Fixed Area 915MHz
-        //United States Area 902~928MHz
-        //{ "1", "2" 4", "8", "22", "50", "51", "52", "128"}
-        if (mReader != null)
+        if (mReader != null) {
             return mReader.setFrequencyMode(Integer.parseInt(area));
+        }
         return false;
     }
 
-    private void addEPCToList(String epc, String rssi) {
-        if (!TextUtils.isEmpty(epc)) {
-            EPC tag = new EPC();
+    /**
+     * Adds a new tag (or updates an existing one) into the batch.
+     * The merge ensures that if the tag is already in the batch, its count is incremented and RSSI updated.
+     */
+    private void addEPCToBatch(String epc, String rssi) {
+        if (TextUtils.isEmpty(epc)) return;
 
-            tag.setId("");
-            tag.setEpc(epc);
-            tag.setCount(String.valueOf(1));
-            tag.setRssi(rssi);
+        EPC tag = new EPC();
+        tag.setId("");
+        tag.setEpc(epc);
+        tag.setCount("1");
+        tag.setRssi(rssi);
 
-            if (tagList.containsKey(epc)) {
-                int tagCount = Integer.parseInt(Objects.requireNonNull(tagList.get(epc)).getCount()) + 1;
-                tag.setCount(String.valueOf(tagCount));
-            }
-            tagList.put(epc, tag);
-
-            final JSONArray jsonArray = new JSONArray();
-
-            for (EPC epcTag : tagList.values()) {
-                JSONObject json = new JSONObject();
-                try {
-                    json.put(TagKey.ID, Objects.requireNonNull(epcTag).getId());
-                    json.put(TagKey.EPC, epcTag.getEpc());
-                    json.put(TagKey.RSSI, epcTag.getRssi());
-                    json.put(TagKey.COUNT, epcTag.getCount());
-                    jsonArray.put(json);
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
-
-            }
-            uhfListener.onRfidRead(jsonArray.toString());
-        }
+        newTagsBatch.merge(epc, tag, (existing, incoming) -> {
+            int count = Integer.parseInt(existing.getCount()) + 1;
+            existing.setCount(String.valueOf(count));
+            existing.setRssi(incoming.getRssi());
+            return existing;
+        });
+        pendingUpdates.set(true);
     }
 
+    /**
+     * Notifies the listener with the scanned barcode.
+     */
     private void recordBarcodeScan(String barcodeScan) {
-        uhfListener.onBarcodeRead(barcodeScan);
+        if (uhfListener != null) {
+            uhfListener.onBarcodeRead(barcodeScan);
+        }
     }
 
     public boolean isEmptyTags() {
@@ -320,39 +514,37 @@ public class UHFHelper {
     }
 
     public boolean isContinuousRfidReadActive() {
-        return continuousRfidReadActive;
+        return continuousRfidReadActive.get();
     }
 
     public boolean isRfidConnected() {
-        return isRfidConnected;
+        return isRfidConnected.get();
     }
 
-
+    /**
+     * Thread that continuously reads RFID tags.
+     */
     class RfidContinuousReadThread extends Thread {
+        @Override
         public void run() {
             mReader.setInventoryCallback(new IUHFInventoryCallback() {
                 @Override
                 public void callback(UHFTAGInfo uhftagInfo) {
                     if (uhftagInfo != null) {
-                        String strTid = uhftagInfo.getTid();
-                        String strResult = "";
-
-                        if (!TextUtils.isEmpty(strTid) && !strTid.equals("0000000000000000")
-                                && !strTid.equals("000000000000000000000000")) {
-                            strResult = "TID:" + strTid + "\n";
+                        String tid = uhftagInfo.getTid();
+                        String prefix = "";
+                        if (!TextUtils.isEmpty(tid) && !tid.equals("0000000000000000")
+                                && !tid.equals("000000000000000000000000")) {
+                            prefix = "TID:" + tid + "\n";
                         }
-
-                        String tagData = strResult + "EPC:" + uhftagInfo.getEPC() + "@" + uhftagInfo.getRssi();
-                        Log.i("RFID", "Tag read: " + tagData);
+                        String tagData = prefix + "EPC:" + uhftagInfo.getEPC() + "@" + uhftagInfo.getRssi();
                         rfidHandler.obtainMessage(1, tagData).sendToTarget();
                     }
                 }
             });
-
-            boolean startSuccess = mReader.startInventoryTag();
-            Log.i("RFID", "Started inventory: " + startSuccess);
-
-            while (continuousRfidReadActive && isInventoryRunning) {
+            boolean started = mReader.startInventoryTag();
+            Log.d(TAG, "Started inventory: " + started);
+            while (continuousRfidReadActive.get() && isInventoryRunning.get()) {
                 try {
                     Thread.sleep(50);
                 } catch (InterruptedException e) {
@@ -360,47 +552,45 @@ public class UHFHelper {
                     break;
                 }
             }
-
             mReader.stopInventory();
-            Log.i("RFID", "Inventory thread stopped");
+            Log.d(TAG, "Stopped inventory thread");
         }
     }
 
-
-
+    /**
+     * Thread that continuously reads barcodes.
+     */
     class BarcodeContinuousReadThread extends Thread {
+        @Override
         public void run() {
-            String strTid;
-            String strResult;
-            UHFTAGInfo res = null;
             if (barcodeDecoder == null) {
                 barcodeDecoder = BarcodeFactory.getInstance().getBarcodeDecoder();
             }
             barcodeDecoder.open(context);
-
-            Log.e(TAG, "Initialized barcode thread");
-    
             BarcodeUtility.getInstance().enablePlaySuccessSound(context, true);
-    
             barcodeDecoder.setDecodeCallback(new BarcodeDecoder.DecodeCallback() {
                 @Override
                 public void onDecodeComplete(BarcodeEntity barcodeEntity) {
-                    Log.e(TAG,"BarcodeDecoder==========================:"+barcodeEntity.getResultCode());
-                    if(barcodeEntity.getResultCode() == BarcodeDecoder.DECODE_SUCCESS){
+                    if (barcodeEntity.getResultCode() == BarcodeDecoder.DECODE_SUCCESS) {
                         Message msg = barcodeHandler.obtainMessage();
                         msg.obj = barcodeEntity.getBarcodeData();
                         barcodeHandler.sendMessage(msg);
-                        Log.e(TAG,"Data==========================:"+barcodeEntity.getBarcodeData());
                     } else {
-                        // scannedBarcode = "FAIL";
-                        Log.e(TAG, "ERROR: failed to scan");
+                        Message msg = barcodeHandler.obtainMessage();
+                        msg.obj = "-1";
+                        barcodeHandler.sendMessage(msg);
                     }
                 }
             });
-            while (continuousBarcodeReadActive) {}
-
+            while (continuousBarcodeReadActive.get()) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
             barcodeDecoder.close();
         }
     }
-
 }

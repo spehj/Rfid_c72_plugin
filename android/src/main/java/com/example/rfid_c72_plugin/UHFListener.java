@@ -6,4 +6,6 @@ public abstract class UHFListener {
     abstract void onBarcodeRead(String barcodeScan);
 
     abstract void onRfidConnect(boolean isRfidConnected, int powerLevel);
+
+    abstract void onLocationValue(int value, boolean valid); // TODO: LocationData
 }
