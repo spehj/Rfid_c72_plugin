@@ -338,9 +338,8 @@ public class UHFHelper {
         if (isLocationRunning.get()) {
             stopTagLocation(); // Stop current location if already running
         }
-        // Convert epc to lowercase
-        epc = epc.toLowerCase();
-        boolean success = mReader.startLocation(context, epc, RFIDWithUHFUART.Bank_EPC, 0,
+
+        boolean success = mReader.startLocation(context, epc, RFIDWithUHFUART.Bank_EPC, 32,
                 new IUHFLocationCallback() {
                     @Override
                     public void getLocationValue(int value, boolean valid) {

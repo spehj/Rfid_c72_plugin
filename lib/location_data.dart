@@ -4,9 +4,9 @@ class LocationData {
 
   LocationData({required this.value, required this.valid});
 
-  factory LocationData.fromJson(Map<String, dynamic> json) => LocationData(
-        value: json["value"],
-        valid: json["valid"],
+  factory LocationData.fromJson(Map<Object?, Object?> json) => LocationData(
+        value: json["value"] as int,
+        valid: json["valid"] as bool,
       );
 
   Map<String, dynamic> toJson() => {

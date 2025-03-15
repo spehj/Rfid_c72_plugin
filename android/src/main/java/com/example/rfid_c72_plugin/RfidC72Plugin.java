@@ -2,6 +2,8 @@ package com.example.rfid_c72_plugin;
 
 import android.content.Context;
 import android.util.Log;
+import java.util.Map;
+
 
 import io.reactivex.Observer;
 import io.reactivex.android.schedulers.AndroidSchedulers;
@@ -54,7 +56,7 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
   private static PublishSubject<String> tagsStatusSubject = PublishSubject.create();
   private static PublishSubject<String> barcodeScanSubject = PublishSubject.create();
 
-  private static PublishSubject<LocationData> locationValueSubject = PublishSubject.create();
+  private static PublishSubject<Map<String, Object>> locationValueSubject = PublishSubject.create();
 
   @Override
   public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
@@ -89,7 +91,7 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
 
       @Override
       public void onLocationValue(int value, boolean valid) {
-        locationValueSubject.onNext(new LocationData(value, valid));
+        locationValueSubject.onNext(new LocationData(value, valid).toMap());
       }
 
 
@@ -213,22 +215,22 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
     final EventChannel locationEventChannel = new EventChannel(messenger, CHANNEL_locationValueSubject);
     locationEventChannel.setStreamHandler(new EventChannel.StreamHandler() {
       @Override
-      public void onListen(Object o, final EventChannel.EventSink eventSink) {
+      public void onListen(Object arguments, final EventChannel.EventSink eventSink) {
         Log.d("RfidC72Plugin", "Location event channel - onListen called");
         locationValueSubject
                 .subscribeOn(Schedulers.newThread())
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Observer<LocationData>() {
+                .subscribe(new Observer<Map<String, Object>>() {
                   @Override
                   public void onSubscribe(Disposable d) {
                     Log.d("RfidC72Plugin", "Location subscription started");
                   }
 
                   @Override
-                  public void onNext(LocationData value) {
-                    Log.d("RfidC72Plugin", "Location value received: " + value.getValue());
+                  public void onNext(Map<String, Object> locationDataMap) {
+                    Log.d("RfidC72Plugin", "Location value received: " + locationDataMap.get("value"));
                     try {
-                      eventSink.success(value);
+                      eventSink.success(locationDataMap);
                     } catch (Exception e) {
                       Log.e("RfidC72Plugin", "Error sending location data to Flutter", e);
                     }
@@ -247,11 +249,12 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
       }
 
       @Override
-      public void onCancel(Object o) {
+      public void onCancel(Object arguments) {
         Log.d("RfidC72Plugin", "Location event channel - onCancel called");
       }
     });
   }
+
 
 
   @Override
