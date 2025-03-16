@@ -343,7 +343,6 @@ public class UHFHelper {
                 new IUHFLocationCallback() {
                     @Override
                     public void getLocationValue(int value, boolean valid) {
-                        Log.d(TAG, "LOCATION CALLBACK RECEIVED: value=" + value + ", valid=" + valid);
                         if (uhfListener != null) {
                             new Handler(Looper.getMainLooper()).post(() ->
                                     uhfListener.onLocationValue(value, valid));
