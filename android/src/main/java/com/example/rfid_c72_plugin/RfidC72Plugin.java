@@ -228,7 +228,6 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
 
                   @Override
                   public void onNext(Map<String, Object> locationDataMap) {
-                    Log.d("RfidC72Plugin", "Location value received: " + locationDataMap.get("value"));
                     try {
                       eventSink.success(locationDataMap);
                     } catch (Exception e) {
