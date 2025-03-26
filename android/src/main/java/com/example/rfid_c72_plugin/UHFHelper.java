@@ -59,6 +59,10 @@ public class UHFHelper {
     private ConcurrentHashMap<String, EPC> tagList;
     private ConcurrentHashMap<String, EPC> newTagsBatch;
 
+    private String lastTagListJson = "";
+
+
+
     private String scannedBarcode;
 
     // Scheduler to process batched tag updates
@@ -195,9 +199,15 @@ public class UHFHelper {
                     .append(TagKey.RSSI).append("\":\"").append(epcTag.getRssi()).append("\",\"")
                     .append(TagKey.COUNT).append("\":\"").append(epcTag.getCount()).append("\"}");
         }
-
         jsonBuilder.append("]");
         final String jsonString = jsonBuilder.toString();
+
+        // Only send if the tag list has changed since the last update.
+        if (jsonString.equals(lastTagListJson)) {
+            // No changes detected, skip update.
+            return;
+        }
+        lastTagListJson = jsonString;
 
         new Handler(Looper.getMainLooper()).post(() ->
                 uhfListener.onRfidRead(jsonString));
