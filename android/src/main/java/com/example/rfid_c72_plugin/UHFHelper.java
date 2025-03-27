@@ -23,6 +23,9 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import io.flutter.plugin.common.MethodChannel.Result;
+
+
 /**
  * Improved UHFHelper class.
  *
@@ -331,48 +334,115 @@ public class UHFHelper {
     }
 
     /**
-     * Starts locating a specific RFID tag based on its EPC
-     * @param epc The EPC of the tag to locate
-     * @return true if started successfully, false otherwise
+     * Starts locating a specific RFID tag asynchronously.
+     *
+     * This method offloads the heavy work off the main thread so that the UI remains responsive.
+     * It returns the result (true if the location operation started successfully, false otherwise)
+     * via the provided Flutter platform channel callback.
+     *
+     * @param epc            The EPC of the tag to locate.
+     * @param resultCallback The callback to return the result.
      */
-    public boolean startTagLocation(String epc) {
+    public void startTagLocation(final String epc, final Result resultCallback) {
         if (mReader == null || !isRfidConnected.get() || epc == null || epc.isEmpty()) {
             Log.e(TAG, "Cannot start tag location - reader not connected or invalid EPC");
-            return false;
+            resultCallback.success(false);
+            return;
         }
 
+        // Stop any ongoing inventory before starting location scanning.
         if (isInventoryRunning.get() || continuousRfidReadActive.get()) {
-            stopRfid(); // Stop any ongoing inventory before starting location
+            stopRfid();
         }
 
+        // Stop current location scanning if one is already running.
         if (isLocationRunning.get()) {
-            stopTagLocation(); // Stop current location if already running
+            stopTagLocation();
         }
 
-        boolean success = mReader.startLocation(context, epc, RFIDWithUHFUART.Bank_EPC, 32,
-                new IUHFLocationCallback() {
-                    @Override
-                    public void getLocationValue(int value, boolean valid) {
-                        if (uhfListener != null) {
-                            new Handler(Looper.getMainLooper()).post(() ->
-                                    uhfListener.onLocationValue(value, valid));
+        // Offload the heavy location-starting process to a background thread.
+        Executors.newSingleThreadExecutor().submit(() -> {
+            // Call the blocking native method.
+            final boolean success = mReader.startLocation(
+                    context,
+                    epc,
+                    RFIDWithUHFUART.Bank_EPC,
+                    32,
+                    new IUHFLocationCallback() {
+                        @Override
+                        public void getLocationValue(final int value, final boolean valid) {
+                            // Post location callback back to the main thread.
+                            new Handler(Looper.getMainLooper()).post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (uhfListener != null) {
+                                        uhfListener.onLocationValue(value, valid);
+                                    }
+                                }
+                            });
                         }
                     }
-                });
+            );
 
-        Log.d(TAG, "LOCATION SUCCESS: " + success);
+            Log.d(TAG, "LOCATION SUCCESS: " + success);
 
-        if (success) {
-            isLocationRunning.set(true);
-            Log.d(TAG, "Tag location started for EPC: " + epc);
+            if (success) {
+                isLocationRunning.set(true);
+                Log.d(TAG, "Tag location started for EPC: " + epc);
+                // Optionally, start a polling thread to keep the location operation active.
+                new LocationPollingThread().start();
+            }
 
-            // Start a polling thread to keep the location operation active
-            new LocationPollingThread().start();
-        }
-
-
-        return success;
+            // Post the result back to the main thread.
+            new Handler(Looper.getMainLooper()).post(() -> resultCallback.success(success));
+        });
     }
+
+
+
+//    /**
+//     * Starts locating a specific RFID tag based on its EPC
+//     * @param epc The EPC of the tag to locate
+//     * @return true if started successfully, false otherwise
+//     */
+//    public boolean startTagLocation(String epc) {
+//        if (mReader == null || !isRfidConnected.get() || epc == null || epc.isEmpty()) {
+//            Log.e(TAG, "Cannot start tag location - reader not connected or invalid EPC");
+//            return false;
+//        }
+//
+//        if (isInventoryRunning.get() || continuousRfidReadActive.get()) {
+//            stopRfid(); // Stop any ongoing inventory before starting location
+//        }
+//
+//        if (isLocationRunning.get()) {
+//            stopTagLocation(); // Stop current location if already running
+//        }
+//
+//        boolean success = mReader.startLocation(context, epc, RFIDWithUHFUART.Bank_EPC, 32,
+//                new IUHFLocationCallback() {
+//                    @Override
+//                    public void getLocationValue(int value, boolean valid) {
+//                        if (uhfListener != null) {
+//                            new Handler(Looper.getMainLooper()).post(() ->
+//                                    uhfListener.onLocationValue(value, valid));
+//                        }
+//                    }
+//                });
+//
+//        Log.d(TAG, "LOCATION SUCCESS: " + success);
+//
+//        if (success) {
+//            isLocationRunning.set(true);
+//            Log.d(TAG, "Tag location started for EPC: " + epc);
+//
+//            // Start a polling thread to keep the location operation active
+//            new LocationPollingThread().start();
+//        }
+//
+//
+//        return success;
+//    }
 
     class LocationPollingThread extends Thread {
         @Override
