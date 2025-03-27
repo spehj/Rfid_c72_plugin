@@ -20,6 +20,7 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
 
 
+
 /**
  * RfidC72Plugin
  */
@@ -323,8 +324,9 @@ public class RfidC72Plugin implements FlutterPlugin, MethodCallHandler {
         break;
       case CHANNEL_startTagLocation:
         String epc = call.argument("epc");
-        result.success(UHFHelper.getInstance().startTagLocation(epc));
+        UHFHelper.getInstance().startTagLocation(epc, result);
         break;
+
 
       case CHANNEL_stopTagLocation:
         result.success(UHFHelper.getInstance().stopTagLocation());
